@@ -9,6 +9,7 @@ from matplotlib import pyplot as plt
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error, r2_score
 from numpy.linalg import norm
 import statistics
+import autokoopman.observable as kobs
 
 from autokoopman import auto_koopman
 import autokoopman.core.trajectory as traj
@@ -49,6 +50,7 @@ def load_data(benchmark):
             break
 
     if len(data) > 100:
+        print("truncate data to 100 trajectories")
         data = data[0:100]
 
 
@@ -68,7 +70,11 @@ def split_data(data, num_test=10):
     training_data = traj.TrajectoriesData(dict(zip(ids, training_data)))
 
     ids = np.arange(0, len(test_data)).tolist()
-    test_data = traj.TrajectoriesData(dict(zip(ids, test_data)))
+
+    if ids:
+        test_data = traj.TrajectoriesData(dict(zip(ids, test_data)))
+    else:
+        test_data = []
 
     return training_data, test_data
 
@@ -79,23 +85,34 @@ def train_model(data):
     dt = data._trajs[0].times[1] - data._trajs[0].times[0]
 
     # learn model from data
+    dim = data._trajs[0].states[0].size
+    num_rff_obs = 200
+    rff_gamma = 1e-4
+    poly_degree = 2
+    observables = 'rff' #kobs.IdentityObservable() | kobs.PolynomialObservable(dim, poly_degree) | kobs.RFFObservable(dim, num_rff_obs, rff_gamma)   
+
     experiment_results = auto_koopman(
         data,  # list of trajectories
         sampling_period=dt,
-        obs_type='rff',
+        obs_type=observables, #'rff',
         opt='grid',
         n_obs=200,
         rank=(1,200,20),
         grid_param_slices=5,
-        n_splits=5,
+        n_splits=None, # was 5
         max_opt_iter=100
     )
 
     # get the model from the experiment results
     model = experiment_results['tuned_model']
 
+    print(f"max: {np.max(model._A)}")
+    print(f"min: {np.min(model._A)}")
+
     print(experiment_results['hyperparameters'])
     print(experiment_results['hyperparameter_values'])
+
+    print()
 
     return model
 
@@ -194,7 +211,13 @@ if __name__ == '__main__':
     
     # split into training and validation set
 
-    training_data, test_data = split_data(data, 80)
+    if len(data) == 100:
+        print(f"using 20 trajectories for test data")
+        training_data, test_data = split_data(data, 20)
+    else:
+        print(f"using all data from training and testing (num traj != 100)")
+        training_data, _ = split_data(data, 0)
+        test_data = training_data
 
     start = time.time()
     model = train_model(training_data)
@@ -206,23 +229,45 @@ if __name__ == '__main__':
     comp_time = round(end - start, 3)
 
     print(benchmark)
-    print(f"The average euc norm perc error is {round(euc_norm * 100, 2)}%")
+    err_str = f"{round(euc_norm * 100, 2)}%"
+    print(f"The average euc norm perc error is {err_str}")
     print("time taken: ", comp_time)
 
     # loop over all test trajectories and plot
     tmp = list(test_data._trajs.values())
 
-    t = tmp[5]
+    # plot first 6 trajectories (or less) on the same plot, using the data from tmp[0] ... tmp[5]
+    # if it's less than 6, plot all of them, otherwise use a 2x3 plot. use subplots
+    figsize = (16, 9)
 
-    test_traj = compute_trajectory(model, t.times, t.states, t.inputs, 1)
-    
-    plt.figure(figsize=(10, 6))
-    plt.plot(test_traj.T[0], test_traj.T[1], label='Trajectory Prediction')
-    plt.plot(t.states.T[0], t.states.T[1], label='Ground Truth')
+    if len(tmp) <= 2:
+        fig, axs = plt.subplots(1, 2, figsize=figsize)
+    elif len(tmp) <= 4:
+        fig, axs = plt.subplots(2, 2, figsize=figsize)
+    else:
+        fig, axs = plt.subplots(2, 3, figsize=figsize)
+     
+    for plot_index in range(0, min(6, len(tmp))):
+        print(f"Plotting trajectory index={plot_index}")
+        t = tmp[plot_index]
 
-    plt.legend()
-    plt.grid()
-    
+        test_traj = compute_trajectory(model, t.times, t.states, t.inputs, 1)
+
+        if len(tmp) <= 2:
+            ax = axs[plot_index]
+        elif len(tmp) <= 4:
+            ax = axs[plot_index // 2][plot_index % 2]
+        else:
+            ax = axs[plot_index // 3][plot_index % 3]
+
+        #plt.figure(figsize=(10, 6))
+        ax.plot(test_traj.T[0], test_traj.T[1], '-o', ms=1.5, lw=0.5, label='Trajectory Prediction')
+        ax.plot(t.states.T[0], t.states.T[1], '-', lw=1, label='Ground Truth')
+
+        #plt.legend()
+        ax.grid()
+        
+    plt.tight_layout()
     plt.show()
 
     '''
