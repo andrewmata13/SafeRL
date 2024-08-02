@@ -18,7 +18,8 @@ def make_states(lead_x_list, lead_y_list, wingman_x_list, wingman_y_list, lead_s
     lead_vx_normalized = np.cos(lead_heading_list)
     lead_vy_normalized = np.sin(lead_heading_list)
 
-    states = list(zip(lead_x_list, lead_y_list, lead_heading_list, lead_speed_list, lead_vx_normalized, lead_vy_normalized))
+    # state is lead aircraft that doesn't change direction or speed
+    states = list(zip(lead_x_list, lead_y_list, lead_heading_list, lead_speed_list))
 
     #sigma = [1000, 1, 1, 1000, 1, 1, 400, 1, 1, 400, 1, 1] # normalization
 
@@ -87,8 +88,8 @@ for data_item in data:
 
         batch = []
         
-output = output[0:6]
-print(f"Note: truncated data into {len(output)} episodes")
+#output = output[0:6]
+#print(f"Note: truncated data into {len(output)} episodes")
 
 
 # Write CSV Files
