@@ -516,7 +516,7 @@ def main():
     num_test = 3
 
     seed = 1985
-    num_features = 20
+    num_features = 200
     state_obs_func = lambda x: get_extended_state_rff(x, seed, num_features)
     #state_obs_func = lambda x: get_extended_state_identity(x)
     action_obs_func = lambda x: get_extended_state_identity(x)
