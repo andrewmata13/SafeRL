@@ -5,7 +5,18 @@ import time
 
 from cachier import cachier
 
-def get_extended_state_rff(X, seed=1985):
+def get_extended_state_identity(X):
+    '''get X with idnetity observables'''
+
+    assert len(X.shape) == 2, f"X.shape={X.shape}, expected 2D array"
+
+    #Z = np.zeros((1, X.shape[1]))
+    #rv = np.vstack((X, Z))
+    rv = X.copy()
+
+    return rv
+
+def get_extended_state_rff(X, seed, num_features):
     '''get X with rff observables'''
 
     assert len(X.shape) == 2, f"X.shape={X.shape}, expected 2D array"
@@ -14,17 +25,16 @@ def get_extended_state_rff(X, seed=1985):
 
     np.random.seed(seed)
     GAMMA = 1e-4
-    NUM_FEATURES = 200 # was 200, 500 = low error, look at 330
     dimension = X.shape[0]
 
-    w = np.sqrt(2 * GAMMA) * np.random.normal(size=(NUM_FEATURES, dimension))
+    w = np.sqrt(2 * GAMMA) * np.random.normal(size=(num_features, dimension))
     
     # Generate D iid samples from Uniform(0,2*pi)
-    u = 2 * np.pi * np.random.rand(1, NUM_FEATURES)
+    u = 2 * np.pi * np.random.rand(1, num_features)
 
-    s = np.sqrt(2 / NUM_FEATURES)
+    s = np.sqrt(2 / num_features)
 
-    # each observatio is gamma * cos(col <dot> rand_vec + rand_phase)    
+    # each observation is gamma * cos(col <dot> rand_vec + rand_phase)    
 
     #print(f"X.shape={X.shape}")
     #print(f"w.shape={w.shape}")
@@ -48,10 +58,22 @@ def make_states(lead_x_list, lead_y_list, wingman_x_list, wingman_y_list, lead_s
     lead_vx_normalized = np.cos(lead_heading_list)
     lead_vy_normalized = np.sin(lead_heading_list)
 
+    wingman_vx_normalized = np.cos(wingman_heading_list)
+    wingman_vy_normalized = np.sin(wingman_heading_list)
+
     lead_vx = lead_speed_list * np.cos(lead_heading_list)
     lead_vy = lead_speed_list * np.sin(lead_heading_list)
 
-    states = list(zip(lead_x_list, lead_y_list, lead_heading_list, lead_speed_list))
+    ############ LEAD ###############
+    #states = list(zip(lead_x_list, lead_y_list, lead_heading_list, lead_speed_list))
+    #states = list(zip(lead_x_list, lead_y_list, lead_vx_normalized, lead_vy_normalized, lead_speed_list)) # magnorm of angle
+
+    ############ WINGMAN ###########
+    states = list(zip(wingman_x_list, wingman_y_list, wingman_heading_list, wingman_speed_list))
+    #states = list(zip(wingman_x_list, wingman_y_list, wingman_vx_normalized, wingman_vy_normalized, wingman_speed_list)) # magnorm of angle
+
+
+    
     #states = list(zip(lead_x_list, lead_y_list, lead_heading_list, lead_speed_list, lead_vx_normalized, lead_vy_normalized))
 
     #sigma = [1000, 1, 1, 1000, 1, 1, 400, 1, 1, 400, 1, 1] # normalization
@@ -162,7 +184,7 @@ def extract_states_actions(data, max_num_traj=np.inf):
 
     return states_np_list, actions_np_list
 
-def train_koopman_model(states_np_list, actions_np_list, get_extended_state_func):
+def train_koopman_model(states_np_list, actions_np_list, get_extended_state_func, get_extended_action_func):
     '''train a koopman model and return it
 
     returns A, B
@@ -171,12 +193,17 @@ def train_koopman_model(states_np_list, actions_np_list, get_extended_state_func
     start = time.time()
     # add rff observables to states
     ext_states_np_list = [get_extended_state_func(states_np) for states_np in states_np_list]
+    ext_actions_np_list = [get_extended_action_func(actions_np) for actions_np in actions_np_list]
+
     diff = time.time() - start
     print(f"Constructed extended states in {diff:.2f} seconds")
 
     X = np.hstack([mat[:,:-1] for mat in ext_states_np_list])
     X_prime = np.hstack([mat[:,1:] for mat in ext_states_np_list])
-    Gamma = np.hstack([mat[:,:-1] for mat in actions_np_list])
+
+
+    #Gamma = np.hstack([mat[:,:-1] for mat in actions_np_list])
+    Gamma = np.hstack([mat[:,:-1] for mat in ext_actions_np_list])
 
     #print(f"X.shape={X.shape}")
     #print(f"X_prime.shape={X_prime.shape}")
@@ -195,17 +222,32 @@ def train_koopman_model(states_np_list, actions_np_list, get_extended_state_func
 
     A = A_B[:, :X.shape[0]]
     B = A_B[:, X.shape[0]:]
-    #print(f"A.shape={A.shape}")
-    #print(f"B.shape={B.shape}")
+    print(f"A.shape={A.shape}")
+    print(f"B.shape={B.shape}")
 
     diff = time.time() - start
     print(f"Total Koopman training: {diff:.2f} seconds")
 
     return A, B
 
-def plot_predictions(A, B, states_np_list, actions_np_list, get_extended_state_func):
+def plot_predictions(A, B, states_np_list, training_state_np_list, actions_np_list, get_extended_state_func, get_extended_action_func):
+    '''plot and analyze predictions'''
+
     num_plots = len(states_np_list)
-    fig, axs = plt.subplots(num_plots, 4, figsize=(16, 9))
+
+    figsize = (16, 9) if num_plots > 1 else (16, 5)
+
+    #ax_index_vars = [(0, 1), (2, 3)]
+    #ax_index_labels = [("X", "Y"), ("Norm(vx)", "Norm(vy)")]
+
+    ax_index_vars = [(0, 1)]
+    ax_index_labels = [("X", "Y")]
+
+    fig, axs = plt.subplots(num_plots, 3 + len(ax_index_vars), figsize=figsize)
+
+    if num_plots == 1:
+        # make axs a 2-d array for compatibility
+        axs = np.array([axs])
 
     for index in range(num_plots):
 
@@ -225,10 +267,15 @@ def plot_predictions(A, B, states_np_list, actions_np_list, get_extended_state_f
         percent_errors = []
         observed_state_norms = []
 
+        print(f"num_vars={num_vars} num_steps={num_steps}")
+
         # normal koopman prediction
         for step in range(num_steps - 1):
             x = test_traj[:, -1:]
             observed_state_norms.append(np.linalg.norm(x))
+
+            #print(f"orig step {step}, x: {x[:num_vars,:]}")
+            print(f"orig step {step}, norm of x={np.linalg.norm(x[:num_vars,:])}, x_obs={np.linalg.norm(x)}")
 
             # first update error
             real_vars_predicted = x[0:num_vars, :]
@@ -242,38 +289,43 @@ def plot_predictions(A, B, states_np_list, actions_np_list, get_extended_state_f
             percent_errors.append(100 * rel_error)
 
             u = actions_np[:, step:step+1]
+            extended_u = get_extended_action_func(u)
 
-            x_prime = A @ x + B @ u
+            x_prime = A @ x + B @ extended_u
 
             #test_traj.append(x_prime)
             test_traj = np.hstack((test_traj, x_prime))
 
-        # resetting koopman prediction
-        
         test_traj = test_traj.T
 
-        ax = axs[index, 0]
-        xs = [x[0] for x in test_traj]
-        ys = [x[1] for x in test_traj]
-        ax.plot(xs, ys, '-o', ms=1.5, lw=0.5, label='Trajectory Prediction', color='r')
-        ax.set_xlabel("X")
-        ax.set_ylabel("Y")
-    
-        ax.plot(states_np[0, :], states_np[1, :], '-', color='g', lw=1, label='Ground Truth')
-        ax.grid()
-
-        ax = axs[index, 1]
+        for ax_index, (var_index, label) in enumerate(zip(ax_index_vars, ax_index_labels)):
+            ax = axs[index, ax_index]
+            xs = [x[var_index[0]] for x in test_traj]
+            ys = [x[var_index[1]] for x in test_traj]
+            ax.plot(xs, ys, '-o', ms=1.7, lw=0.6, label='Trajectory Prediction', color='r')
+            ax.set_xlabel(label[0])
+            ax.set_ylabel(label[1])
         
+            ax.plot(states_np[var_index[0], :], states_np[var_index[1], :], '-', color='g', lw=1, label='Ground Truth')
+            ax.grid()
+            #ax.set_aspect('equal', adjustable='box')
 
-        for other_i, other_states_np in enumerate(states_np_list):
-            color = 'g' if other_states_np is states_np else 'k'
-            zorder = 2 if other_states_np is states_np else 1
-            lw = 2 if other_states_np is states_np else 0.5
+        ax = axs[index, len(ax_index_vars)]
+        
+        # plot training data
+        for other_i, other_states_np in enumerate(training_state_np_list):
+            color = 'k'
+            zorder = 1
+            lw = 0.5
 
-            if other_i > 2 or color == 'g':
-                xs = other_states_np[0, :]
-                ys = other_states_np[1, :]
-                ax.plot(xs, ys, '-', color=color, lw=lw, zorder=zorder)
+            xs = other_states_np[0, :]
+            ys = other_states_np[1, :]
+            ax.plot(xs, ys, '-', color=color, lw=lw, zorder=zorder)
+
+        # plot test data in green
+        xs = states_np[0, :]
+        ys = states_np[1, :]
+        ax.plot(xs, ys, '-', color='g', lw=2, zorder=2)
 
         #xs = [x[0] for x in test_traj]
         #ys = [x[0] for x in test_traj]
@@ -283,13 +335,15 @@ def plot_predictions(A, B, states_np_list, actions_np_list, get_extended_state_f
         #ax.plot(states_np[2, :], states_np[3, :], '-', color='g', lw=1, label='Ground Truth')
         #ax.grid()
 
-        ax = axs[index, 2]
+        # plot percent error
+        ax = axs[index, 1 + len(ax_index_vars)]
         ax.plot(percent_errors, label='Orig Koopman', color='r')
         
         ax.set_xlabel("Time Step")
         ax.set_ylabel("Percent Error (%)")
 
-        ax = axs[index, 3]
+        # plot norm of state
+        ax = axs[index, 2 + len(ax_index_vars)]
         ax.plot(observed_state_norms, label='Orig Koopman', color='r')
         ax.set_xlabel("Time Step")
         ax.set_ylabel("2-Norm of Observed State")
@@ -302,6 +356,12 @@ def plot_predictions(A, B, states_np_list, actions_np_list, get_extended_state_f
         for step in range(num_steps - 1):
             x = reset_test_traj[:, -1:]
             x_obs = get_extended_state_func(x)
+
+            print(f"resetting step {step}, norm of x={np.linalg.norm(x)}, x_obs={np.linalg.norm(x_obs)}")
+
+            if np.linalg.norm(x) > 1e6:
+                print(f"Floating point error at step {step}, norm of x={np.linalg.norm(x)}")
+                break
 
             reset_observed_state_norms.append(np.linalg.norm(x_obs))
 
@@ -317,8 +377,17 @@ def plot_predictions(A, B, states_np_list, actions_np_list, get_extended_state_f
             reset_percent_errors.append(100 * reset_rel_error)
 
             u = actions_np[:, step:step+1]
+            extended_u = get_extended_action_func(u)
 
-            x_prime = A @ x_obs + B @ u
+            try:
+                x_prime = A @ x_obs + B @ extended_u
+            except FloatingPointError:
+                print(f"(w/resets) Floating point error at step {step}")
+                break
+
+            # normalize the magnorm part of x_obs
+            #magnorm_len = np.linalg.norm(x_prime[2:4, :])
+            #x_prime[2:4, :] /= magnorm_len
 
             # pop off the non-real vars
             x_prime = x_prime[0:num_vars, :]
@@ -328,24 +397,26 @@ def plot_predictions(A, B, states_np_list, actions_np_list, get_extended_state_f
 
         reset_test_traj = reset_test_traj.T
 
-        ax = axs[index, 0]
-        xs = [x[0] for x in reset_test_traj]
-        ys = [x[1] for x in reset_test_traj]
-        ax.plot(xs, ys, '-o', ms=1.5, lw=0.5, label='Prediction with Resets', color='b')
-        ax.legend()
+        for ax_index, (var_index, label) in enumerate(zip(ax_index_vars, ax_index_labels)):
+            ax = axs[index, ax_index]
+            xs = [x[var_index[0]] for x in reset_test_traj]
+            ys = [x[var_index[1]] for x in reset_test_traj]
+            
+            ax.plot(xs, ys, '-o', ms=1.2, lw=0.4, label='Prediction with Resets', color='b')
+            ax.legend()
 
-        ax = axs[index, 2]
+        ax = axs[index, 1 + len(ax_index_vars)]
         ax.plot(reset_percent_errors, label='With Resets', color='b')
         ax.legend()
 
-        ax = axs[index, 3]
+        ax = axs[index, 2 + len(ax_index_vars)]
         ax.plot(reset_observed_state_norms, label='With Resets', color='b')
         ax.legend()
 
     plt.tight_layout()
     plt.show()
 
-def get_centers_ranges(states_np_list):
+def get_centers_ranges(states_np_list, stdout=False):
     '''get the centers and ranges of the data
     
     returns centers, ranges'''
@@ -355,6 +426,12 @@ def get_centers_ranges(states_np_list):
 
     centers = (min_states + max_states) / 2
     ranges = max_states - min_states
+
+    if stdout:
+        print(f"min_states={min_states}")
+        print(f"max_states={max_states}")
+        print(f"centers={centers}")
+        print(f"ranges={ranges}")
 
     return centers, ranges
 
@@ -388,7 +465,7 @@ def denormalize_matrix(norm_data_mat, centers, ranges):
     assert data_mat.shape == norm_data_mat.shape, f"data_mat.shape={data_mat.shape} != norm_data_mat.shape={norm_data_mat.shape}"
     return data_mat
 
-def normalize_single_list(data, centers, ranges):
+def normalize_single_list(data, centers, ranges, print_label=None):
     '''normalize a single data set
     
     data is a list of 2-d np.arrays, normalization is done on the rows
@@ -400,9 +477,6 @@ def normalize_single_list(data, centers, ranges):
 
         normalized_data.append(norm_data_mat)
 
-    #centers, ranges = get_centers_ranges(normalized_data)
-    #print(f"after normalization centers={centers} ranges={ranges}")
-
     return normalized_data
 
 def normalize_data_lists(test_states, test_actions, training_states, training_actions):
@@ -413,7 +487,10 @@ def normalize_data_lists(test_states, test_actions, training_states, training_ac
 
     start = time.time()
 
-    centers_states, ranges_states = get_centers_ranges(training_states)
+    centers_states, ranges_states = get_centers_ranges(training_states, stdout=True)
+
+    #print(f"Normalizing states using centers={centers_states} ranges={ranges_states}")
+
     centers_actions, ranges_actions  = get_centers_ranges(training_actions)
 
     test_states = normalize_single_list(test_states, centers_states, ranges_states)
@@ -432,21 +509,34 @@ def normalize_data_lists(test_states, test_actions, training_states, training_ac
 def main():
     '''main entry point'''
 
-    num_traj = 10
-    obs_func = get_extended_state_rff
+    # Set NumPy to raise an error on overflow
+    np.seterr(over='raise', invalid='raise')
+
+    num_traj = 100
+    num_test = 3
+
+    seed = 1985
+    num_features = 20
+    state_obs_func = lambda x: get_extended_state_rff(x, seed, num_features)
+    #state_obs_func = lambda x: get_extended_state_identity(x)
+    action_obs_func = lambda x: get_extended_state_identity(x)
+    #action_obs_func = lambda x: get_extended_state_rff(x, seed+1, num_features)
 
     start = time.time()
 
     states_np_list, actions_np_list = load_data(max_num_traj=num_traj)
-    test_states, test_actions, training_states, training_actions = split_test_train(states_np_list, actions_np_list, num_test=3)
+    test_states, test_actions, training_states, training_actions = split_test_train(states_np_list, actions_np_list, num_test=num_test)
 
-    norm_tup, test_states, test_actions, training_states, training_actions = normalize_data_lists(test_states, test_actions, training_states, training_actions)
+    #norm_tup, test_states, test_actions, training_states, training_actions = normalize_data_lists(test_states, test_actions, training_states, training_actions)
 
-    A, B = train_koopman_model(training_states, training_actions, obs_func)
+    A, B = train_koopman_model(training_states, training_actions, state_obs_func, action_obs_func)
     diff = time.time() - start
     print(f"Total time: {diff:.2f} seconds")
 
-    plot_predictions(A, B, test_states, test_actions, obs_func)
+    print(f"norm of A: {np.linalg.norm(A)}")
+    print(f"norm of B: {np.linalg.norm(B)}")
+
+    plot_predictions(A, B, test_states, training_states, test_actions, state_obs_func, action_obs_func)
 
 if __name__ == '__main__':
     main()
