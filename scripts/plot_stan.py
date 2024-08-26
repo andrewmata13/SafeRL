@@ -9,7 +9,14 @@ def main():
 
     file_path = sys.argv[1]
     with open(file_path, 'r') as file:
-        data = [json.loads(line) for line in file]
+        data = []
+        for line in file:
+            json_line = json.loads(line)
+
+            if json_line['rollout_num'] != 0:
+                break
+            
+            data.append(json_line)
 
     # Extracting the x and y coordinates for both the lead and wingman
     lead_x = [entry['info']['lead']['x'] for entry in data]

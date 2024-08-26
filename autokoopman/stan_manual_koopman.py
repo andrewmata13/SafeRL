@@ -5,6 +5,11 @@ import time
 
 from cachier import cachier
 
+DO_HYPERPARM_TUNING = False
+USE_REL_COORDS = False
+REL_THETA = False
+NORMALIZE = True
+
 def get_extended_state_identity(X):
     '''get X with idnetity observables'''
 
@@ -21,7 +26,7 @@ def get_extended_state_rff(X, seed, gamma=1e-4, num_features=200):
 
     assert len(X.shape) == 2, f"X.shape={X.shape}, expected 2D array"
 
-    observations = []
+    #print(f"Using RFF observables with num_features={num_features}, gamma={gamma}, dimensions={X.shape[0]}")
 
     np.random.seed(seed)
     
@@ -44,10 +49,10 @@ def get_extended_state_rff(X, seed, gamma=1e-4, num_features=200):
 
     #print(f"Z.shape={Z.shape}")
 
-    #one = np.ones((1, Z.shape[1]))
-    #rv = np.vstack((X, one, Z))
+    one = np.ones((1, Z.shape[1]))
+    rv = np.vstack((X, one, Z))
     
-    rv = np.vstack((X, Z))
+    #rv = np.vstack((X, Z))
 
     return rv
 
@@ -60,6 +65,9 @@ def make_states(lead_x_list, lead_y_list, wingman_x_list, wingman_y_list, lead_s
     wingman_vx_normalized = np.cos(wingman_heading_list)
     wingman_vy_normalized = np.sin(wingman_heading_list)
 
+    wingman_vx = wingman_speed_list * np.cos(wingman_heading_list)
+    wingman_vy = wingman_speed_list * np.sin(wingman_heading_list)
+
     lead_vx = lead_speed_list * np.cos(lead_heading_list)
     lead_vy = lead_speed_list * np.sin(lead_heading_list)
 
@@ -69,7 +77,7 @@ def make_states(lead_x_list, lead_y_list, wingman_x_list, wingman_y_list, lead_s
 
     ############ WINGMAN ###########
     states = list(zip(wingman_x_list, wingman_y_list, wingman_heading_list, wingman_speed_list))
-    #states = list(zip(wingman_x_list, wingman_y_list, wingman_vx_normalized, wingman_vy_normalized, wingman_speed_list)) # magnorm of angle
+    #states = list(zip(wingman_x_list, wingman_y_list, wingman_heading_list, wingman_speed_list, wingman_vx, wingman_vy, )) # magnorm of angle
 
 
     
@@ -169,12 +177,16 @@ def extract_states_actions(data, max_num_traj=np.inf):
             wingman_heading = np.array([entry['info']['wingman']['heading'] for entry in batch])
 
             #actions = [entry['actions'] for entry in batch] ### figure out what is actions??
-            actions = np.array([entry["info"]["wingman"]["controller"]["control"] for entry in batch])
+
+            # note that control is the value at the PREVIOUS step (so ignore the first action)
+            actions = np.array([entry["info"]["wingman"]["controller"]["control"] for entry in batch[1:] + [batch[-1]]])
             batch = []
 
             states = make_states(lead_x, lead_y, wingman_x, wingman_y, lead_speed, wingman_speed, lead_heading, wingman_heading)
 
             states_np_list.append(np.array(states).T)
+
+            
             actions_np_list.append(np.array(actions).T)
 
             if len(states_np_list) >= max_num_traj:
@@ -206,28 +218,27 @@ def data_to_x_xp_rel(state_np, state_prime_np, action_np, get_extended_state_fun
     pt_prime = np.array([x_prime, y_prime])
 
     rel_pt = pt_prime - pt
-    # rotate by -theta
-    R_neg_theta = make_rotation_matrix(-theta)
-    rel_pt_rotated = R_neg_theta @ rel_pt
 
-    #delta_x = x_prime - x
-    #delta_y = y_prime - y
-    delta_theta = theta_prime - theta
-    #delta_speed = speed_prime - speed
+    if REL_THETA:
+        # rotate by -theta
+        R_neg_theta = make_rotation_matrix(-theta)
+        rel_pt_rotated = R_neg_theta @ rel_pt
 
-    x = np.array([[0], [0], [0], [speed]], dtype=float)
-    x_prime = np.array([[rel_pt_rotated[0]], [rel_pt_rotated[1]], [delta_theta], [speed_prime]], dtype=float)
+        #delta_x = x_prime - x
+        #delta_y = y_prime - y
+        delta_theta = theta_prime - theta
+        #delta_speed = speed_prime - speed
+
+        x = np.array([[0], [0], [0], [speed]], dtype=float)
+        x_prime = np.array([[rel_pt_rotated[0]], [rel_pt_rotated[1]], [delta_theta], [speed_prime]], dtype=float)
+    else:
+        # absolute theta
+        x = np.array([[0], [0], [theta], [speed]], dtype=float)
+
+        x_prime = np.array([[rel_pt[0]], [rel_pt[1]], [theta_prime], [speed_prime]], dtype=float)
 
     x_ext = get_extended_state_func(x)
     x_ext_prime = get_extended_state_func(x_prime)
-
-    
-    #print(f"x: {x}")
-    #print(f"x_ext: {x_ext}")
-    #print(f"u: {action_np}")
-    #print(f"x_prime: {x_prime}")
-    #print(f"x_ext_prime: {x_ext_prime}")
-    #exit(1)
 
     return x_ext, x_ext_prime
 
@@ -253,24 +264,48 @@ def predict_with_koopman_rel(A, B, x_extended, u, get_extended_state_func, get_e
     returns the next extended state
     '''
 
+    #print(f"state:\n{x_extended[:4]}\nu: {u}")
+
     rel_x = x_extended[:4, :].copy() # drop the observables since we have to first predict the real state (similar to resetting)
     rel_x[0, 0] = 0 # set the x to 0
     rel_x[1, 0] = 0 # set the y to 0
-    rel_x[2, 0] = 0 # set the theta to 0
 
-    print("!!!!!! TODO: need to rotate back!!!")
+    if REL_THETA:
+        rel_x[2, 0] = 0 # set the theta to 0
 
     rel_x_extended = get_extended_state_func(rel_x)
 
     #x = get_extended_state_func(x)
     u = get_extended_action_func(u)
 
-    x_prime = A @ rel_x_extended + B @ u
+    x_rel_prime = A @ rel_x_extended + B @ u
 
-    # reconstruct the real state based on the offset
-    x_prime[0, 0] += x_extended[0, 0]
-    x_prime[1, 0] += x_extended[1, 0]
-    x_prime[2, 0] += x_extended[2, 0]
+    #print(f"rel_x_prime: {x_rel_prime[:4, 0]}")
+
+    theta =  x_extended[2, 0]
+
+    if REL_THETA:
+        R_theta = make_rotation_matrix(theta)
+
+        pos_offset = R_theta @ x_rel_prime[0:2, 0]
+
+        #print(f"pos_offset: {pos_offset}")
+
+        x_prime = np.zeros(x_rel_prime.shape)
+
+        x_prime[0, 0] = pos_offset[0] + x_extended[0, 0]
+        x_prime[1, 0] = pos_offset[1] + x_extended[1, 0]
+        x_prime[2, 0] = x_extended[2, 0] + x_rel_prime[2, 0]
+        x_prime[3, 0] = x_rel_prime[3, 0]
+    else:
+        # absolute theta
+        pos_offset = x_rel_prime[0:2, 0]
+
+        x_prime = np.zeros(x_rel_prime.shape)
+        x_prime[0, 0] = pos_offset[0] + x_extended[0, 0]
+        x_prime[1, 0] = pos_offset[1] + x_extended[1, 0]
+        x_prime[2, 0] = x_rel_prime[2, 0]
+        x_prime[3, 0] = x_rel_prime[3, 0]
 
     return x_prime
 
@@ -301,7 +336,10 @@ def train_koopman_model(states_np_list, actions_np_list, get_extended_state_func
             state_np = states_np[:, step:step+1]
             state_prime_np = states_np[:, step + 1:step + 2]
 
-            single_state_x, singe_state_xp = data_to_x_xp_abs(state_np, state_prime_np, action_np, get_extended_state_func)
+            if USE_REL_COORDS:
+                single_state_x, singe_state_xp = data_to_x_xp_rel(state_np, state_prime_np, action_np, get_extended_state_func)
+            else:
+                single_state_x, singe_state_xp = data_to_x_xp_abs(state_np, state_prime_np, action_np, get_extended_state_func)
 
             X_mat_list.append(single_state_x)
             X_prime_mat_list.append(singe_state_xp)
@@ -363,7 +401,9 @@ def plot_predictions(A, B, states_np_list, training_state_np_list, actions_np_li
     #ax_index_labels = [("X", "Y")]
 
     if plot:
-        fig, axs = plt.subplots(num_plots, 3 + len(ax_index_vars), figsize=figsize)
+        horz_plots = 3 + len(ax_index_vars)
+
+        fig, axs = plt.subplots(num_plots, horz_plots, figsize=figsize)
 
         if num_plots == 1:
             # make axs a 2-d array for compatibility
@@ -380,7 +420,9 @@ def plot_predictions(A, B, states_np_list, training_state_np_list, actions_np_li
         first_state = states_np[:, 0:1]
 
         #print(f"first_state.shape={first_state.shape}")
+        print("getting extended first state...")
         first_state_observed = get_extended_state_func(first_state)
+        print("gotten...")
 
         #print(f"first_state_observed.shape={first_state_observed.shape}")
         num_steps = states_np.shape[1]
@@ -410,13 +452,11 @@ def plot_predictions(A, B, states_np_list, training_state_np_list, actions_np_li
 
             u = actions_np[:, step:step+1]
 
-            x_prime = predict_with_koopman_rel(A, B, x, u, get_extended_state_func, get_extended_action_func)
-
-            #extended_u = get_extended_action_func(u)
-
-            #x_prime = A @ x + B @ extended_u
-
-            #test_traj.append(x_prime)
+            if USE_REL_COORDS:
+                x_prime = predict_with_koopman_rel(A, B, x, u, get_extended_state_func, get_extended_action_func)
+            else:
+                x_prime = predict_with_koopman_abs(A, B, x, u, get_extended_state_func, get_extended_action_func)
+            
             test_traj = np.hstack((test_traj, x_prime))
 
         last_percent_errors.append(percent_errors[-1])
@@ -471,13 +511,14 @@ def plot_predictions(A, B, states_np_list, training_state_np_list, actions_np_li
         ax.set_ylabel("Percent Error (%)")
 
         # plot norm of state
-        ax = axs[index, 2 + len(ax_index_vars)]
+        ax_index = 2 + len(ax_index_vars)
+        ax = axs[index, ax_index]
         ax.plot(observed_state_norms, label='Orig Koopman', color='r')
         ax.set_xlabel("Time Step")
         ax.set_ylabel("2-Norm of Observed State")
 
         ############ now do resetting koopman prediction
-        if False:
+        if not USE_REL_COORDS:
             reset_test_traj = first_state_observed[0:num_vars, :]
             reset_percent_errors = []
             reset_observed_state_norms = []
@@ -527,6 +568,7 @@ def plot_predictions(A, B, states_np_list, training_state_np_list, actions_np_li
             reset_test_traj = reset_test_traj.T
 
             for ax_index, (var_index, label) in enumerate(zip(ax_index_vars, ax_index_labels)):
+     
                 ax = axs[index, ax_index]
                 xs = [x[var_index[0]] for x in reset_test_traj]
                 ys = [x[var_index[1]] for x in reset_test_traj]
@@ -534,13 +576,16 @@ def plot_predictions(A, B, states_np_list, training_state_np_list, actions_np_li
                 ax.plot(xs, ys, '-o', ms=1.2, lw=0.4, label='Prediction with Resets', color='b')
                 ax.legend()
 
-            ax = axs[index, 1 + len(ax_index_vars)]
-            ax.plot(reset_percent_errors, label='With Resets', color='b')
-            ax.legend()
+            if False:
+                ax_index += 1
+                ax = axs[index, ax_index]
+                ax.plot(reset_percent_errors, label='With Resets', color='b')
+                ax.legend()
 
-            ax = axs[index, 2 + len(ax_index_vars)]
-            ax.plot(reset_observed_state_norms, label='With Resets', color='b')
-            ax.legend()
+                ax_index += 1
+                ax = axs[index, ax_index]
+                ax.plot(reset_observed_state_norms, label='With Resets', color='b')
+                ax.legend()
 
     print(f"Last percent errors: {last_percent_errors}, avg: {np.average(last_percent_errors)}")
 
@@ -653,11 +698,17 @@ def try_koopman_model(training_states, training_actions, test_states, test_actio
     action_obs_func = lambda x: get_extended_state_identity(x)
     #action_obs_func = lambda x: get_extended_state_rff(x, seed+1, num_features)
 
-    #norm_tup, test_states, test_actions, training_states, training_actions = normalize_data_lists(test_states, test_actions, training_states, training_actions)
+    if NORMALIZE:
+        norm_tup, test_states, test_actions, training_states, training_actions = normalize_data_lists(test_states, test_actions, training_states, training_actions)
 
     A, B = train_koopman_model(training_states, training_actions, state_obs_func, action_obs_func)
     diff = time.time() - start
     print(f"Train model time: {diff:.2f} seconds")
+
+    #print(f"A:\n{A}")
+    #print(f"B:\n{B}")
+    #print("debug exit")
+    #exit(1)
 
     #print(f"norm of A: {np.linalg.norm(A)}")
     #print(f"norm of B: {np.linalg.norm(B)}")
@@ -670,6 +721,7 @@ def main():
 
     # Set NumPy to raise an error on overflow
     np.seterr(over='raise', invalid='raise')
+    np.set_printoptions(suppress=True) # no scientific notation
 
     num_traj = 100
     num_test = 3 # num validation equals num test
@@ -683,20 +735,27 @@ def main():
 
     best_hyperparams = {"percent_error": np.inf, "gamma": None, "num_features": None}
 
-    for num_features in [20, 50, 100, 200]:
-        for gamma in [1, 1e-2, 1e-4]:
+    if DO_HYPERPARM_TUNING:
+        num_features_list = [20, 50, 100, 200, 500]
+        gamma_list = [1.0, 1e-2, 1e-3, 1e-4]
+    else:
+        num_features_list = [200]
+        gamma_list = [1e-4]
+
+    for num_features in num_features_list:
+        for gamma in gamma_list:
             print(f"Training with gamma={gamma}, num_features={num_features}")
             
             percent_error = try_koopman_model(training_states, training_actions, validation_states, validation_actions, seed, gamma, num_features, plot=False)
             
             print(f"Average percent error at last time step: {percent_error:.2f}%")
 
-            if percent_error < best_hyperparams["percent_error"]:
+            if best_hyperparams["percent_error"] == np.inf or percent_error < best_hyperparams["percent_error"]:
                 best_hyperparams["percent_error"] = percent_error
                 best_hyperparams["gamma"] = gamma
                 best_hyperparams["num_features"] = num_features
 
-    print(f"Plotting best hyperparameters: {best_hyperparams}")
+    print(f"\nPlotting best hyperparameters: {best_hyperparams}")
 
     try_koopman_model(training_states, training_actions, test_states, test_actions, seed, best_hyperparams["gamma"], best_hyperparams["num_features"], plot=True)
 
