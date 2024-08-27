@@ -16,7 +16,7 @@ class KoopmanIdentity:
     in base version, identity observables are used (plain DMD)
     '''
 
-    def __init__(self, name='Plain DMD'):
+    def __init__(self, name='Plain $DMD$'):
         '''initialize the Koopman model'''
 
         self.name = name
@@ -29,6 +29,14 @@ class KoopmanIdentity:
         '''get the extended state, for the first state in a trajectory'''
 
         return get_extended_state_identity(state_np)
+    
+    def preprocess_trajectory(self, states_np, actions_np=None):
+        '''preprocess a test trajectory, possibly modifying it (for example to normalize)'''
+
+        if actions_np is None:
+            return states_np
+        
+        return states_np, actions_np
 
     def data_to_x_xprime(self, state_np, state_prime_np):
         '''convert a single data point to x and x' for koopman training'''
@@ -55,11 +63,18 @@ class KoopmanIdentity:
         actions_np_list is a list of numpy arrays of actions
         '''
 
+        assert self.A is None, "Koopman model already trained"
+
         self.A, self.B = train_koopman(states_np_list, actions_np_list, self.data_to_x_xprime)
+
+    def max_plot_steps(self):
+        '''maximum number of steps to plot'''
+
+        return np.inf
 
 class KoopmanRFF(KoopmanIdentity):
 
-    def __init__(self, gamma, num_features, name='RFF', seed=1985):
+    def __init__(self, gamma, num_features, name='$RFF$', seed=1985):
         fullname = f"{name} ($\gamma$={gamma}, $N_{{obs}}$={num_features})"
         super().__init__(fullname)
 
@@ -72,10 +87,106 @@ class KoopmanRFF(KoopmanIdentity):
 
         return get_extended_state_rff(state_np, self.seed, gamma=self.gamma, num_features=self.num_features, add_ones=False)
     
+class KoopmanIdentityNormalized(KoopmanIdentity):
+    
+    def __init__(self, name='Plain $DMD_{Norm}$'):
+        super().__init__(name=name)
+
+        # assigned on train()
+        self.centers_states = None 
+        self.ranges_states = None
+        self.centers_actions = None
+        self.ranges_actions = None
+
+    def get_extended_single_state(self, state_np):
+        '''get the extended state, for the first state in a trajectory'''
+
+        # need to add a one since we are normalizing
+
+        return get_extended_state_identity(state_np, add_ones=True)
+
+    def preprocess_trajectory(self, states_np, actions_np=None):
+        '''preprocess a test trajectory, possibly modifying it (for example to normalize)'''
+
+        assert self.centers_states is not None, "Koopman model not trained, call train() first"
+        
+        normalized_states_np = normalize_single_list([states_np], self.centers_states, self.ranges_states)[0]
+
+        if actions_np is None:
+            return normalized_states_np
+        
+        normalized_actions_np = normalize_single_list([actions_np], self.centers_actions, self.ranges_actions)[0]
+
+        return normalized_states_np, normalized_actions_np
+
+    def train(self, states_np_list, actions_np_list):
+        '''train the koopman model
+
+        states_np_list is a list of numpy arrays of states
+        actions_np_list is a list of numpy arrays of actions
+        '''
+
+        assert self.A is None, "Koopman model already trained"
+
+        # normalize states and store the normalization factors
+        norm_tup, norm_states_np_list, norm_actions_np_list = normalize_state_action_lists(states_np_list, actions_np_list)
+        self.centers_states, self.ranges_states, self.centers_actions, self.ranges_actions = norm_tup
+
+        super().train(norm_states_np_list, norm_actions_np_list)
+    
+class KoopmanRFFNormalized(KoopmanRFF):
+
+    def __init__(self, gamma, num_features, name='$RFF_{Norm}$', seed=1985):
+        super().__init__(gamma, num_features, name=name, seed=seed)
+
+        # assigned on train()
+        self.centers_states = None 
+        self.ranges_states = None
+        self.centers_actions = None
+        self.ranges_actions = None
+
+        print("!!! TODO: abstract away normalization somehow (multiple inheritance?) !!! DEBUG EXIT")
+        exit(1)
+
+    def preprocess_trajectory(self, states_np, actions_np):
+        '''preprocess a test trajectory, possibly modifying it (for example to normalize)'''
+
+        assert self.centers_actions is not None, "Koopman model not trained, call train() first"
+        
+        normalized_states_np = normalize_single_list([states_np], self.centers_states, self.ranges_states)[0]
+        normalized_actions_np = normalize_single_list([actions_np], self.centers_actions, self.ranges_actions)[0]
+
+        return normalized_states_np, normalized_actions_np
+
+    def train(self, states_np_list, actions_np_list):
+        '''train the koopman model
+
+        states_np_list is a list of numpy arrays of states
+        actions_np_list is a list of numpy arrays of actions
+        '''
+
+        assert self.A is None, "Koopman model already trained"
+
+        # normalize states and store the normalization factors
+        norm_tup, norm_states_np_list, norm_actions_np_list = normalize_state_action_lists(states_np_list, actions_np_list)
+        self.centers_states, self.ranges_states, self.centers_actions, self.ranges_actions = norm_tup
+
+        super().train(norm_states_np_list, norm_actions_np_list)
+
+    def get_extended_single_state(self, state_np):
+        '''get the extended state, for the first state in a trajectory'''
+
+        return get_extended_state_rff(state_np, self.seed, gamma=self.gamma, num_features=self.num_features, add_ones=True)
+    
+    def max_plot_steps(self):
+        '''maximum number of steps to plot'''
+
+        return 2
+
 class KoopmanRFFResets(KoopmanRFF):
 
-    def __init__(self, gamma, num_features, seed=1985):
-        super().__init__(gamma, num_features, name="RFF w/Resets", seed=seed)
+    def __init__(self, gamma, num_features, name='$RFF_{Reset}$', seed=1985):
+        super().__init__(gamma, num_features, name=name, seed=seed)
 
     def predict(self, x_extended, u):
         '''predict the next state using the koopman model
@@ -88,10 +199,82 @@ class KoopmanRFFResets(KoopmanRFF):
         # pull out just the state variables
         vars = x_extended[0:-self.num_features, :]
 
-        # recompute extended state
+        # recompute (reset) observables
         reset_x_extended = self.get_extended_single_state(vars)
 
         return self.A @ reset_x_extended + self.B @ u
+    
+def normalize_matrix(mat, centers, ranges):
+    '''normalize a single 2-d matrix, with columns being the snapshots'''
+
+    # multiply by 2 to make it between -1 and 1
+    norm_data_mat = 2 * (mat - centers[:, np.newaxis]) / ranges[:, np.newaxis]
+
+    assert norm_data_mat.shape == mat.shape, f"norm_data_mat.shape={norm_data_mat.shape} != data_mat.shape={mat.shape}"
+    return norm_data_mat
+
+def denormalize_matrix(norm_data_mat, centers, ranges):
+    '''denormalize a single 2-d matrix, with columns being the snapshots'''
+
+    # multiply by 0.5 since range was 2.0 (between -1 and 1)
+    data_mat = 0.5 * norm_data_mat * ranges[:, np.newaxis] + centers[:, np.newaxis]
+
+    assert data_mat.shape == norm_data_mat.shape, f"data_mat.shape={data_mat.shape} != norm_data_mat.shape={norm_data_mat.shape}"
+    return data_mat
+
+def normalize_single_list(data, centers, ranges, print_label=None):
+    '''normalize a single data set
+    
+    data is a list of 2-d np.arrays, normalization is done on the rows
+    '''
+
+    normalized_data = []
+    for data_mat in data:        
+        norm_data_mat = normalize_matrix(data_mat, centers, ranges)
+
+        normalized_data.append(norm_data_mat)
+
+    return normalized_data
+
+def get_centers_ranges(states_np_list, stdout=False):
+    '''get the centers and ranges of the data
+    
+    returns centers, ranges'''
+
+    min_states = np.min(np.array([np.min(states_np, axis=1) for states_np in states_np_list]), axis=0)
+    max_states = np.max(np.array([np.max(states_np, axis=1) for states_np in states_np_list]), axis=0)
+
+    centers = (min_states + max_states) / 2
+    ranges = max_states - min_states
+
+    if stdout:
+        print(f"min_states={min_states}")
+        print(f"max_states={max_states}")
+        print(f"centers={centers}")
+        print(f"ranges={ranges}")
+
+    return centers, ranges
+
+def normalize_state_action_lists(training_states, training_actions):
+    '''normalize the data based on ranges in training data
+
+    returns norm_tup, normalized_training_states, normalized_training_actions
+
+    where norm_tup is a tuple of (centers_states, ranges_states, centers_actions, ranges_actions)
+    '''
+
+    centers_states, ranges_states = get_centers_ranges(training_states, stdout=False)
+
+    #print(f"Normalizing states using centers={centers_states} ranges={ranges_states}")
+
+    centers_actions, ranges_actions  = get_centers_ranges(training_actions)
+
+    training_states = normalize_single_list(training_states, centers_states, ranges_states)
+    training_actions = normalize_single_list(training_actions, centers_actions, ranges_actions)
+
+    norm_tup = (centers_states, ranges_states, centers_actions, ranges_actions)
+
+    return norm_tup, training_states, training_actions
 
 def train_koopman(states_np_list, actions_np_list, data_to_x_xprime_func):
     '''train a koopman model'''
@@ -174,11 +357,14 @@ def analyze_predictions(states_np_list, training_state_np_list, actions_np_list,
             states_np = states_np_list[trajectory_index]
             actions_np = actions_np_list[trajectory_index]
 
+            # possibly normalize
+            states_np, actions_np = koopman_obj.preprocess_trajectory(states_np, actions_np)
+
             # replay using koopman
             first_state = states_np[:, 0:1]
             first_state_extended = koopman_obj.get_extended_single_state(first_state)
 
-            print(f"k_index={k_index} trajectory_index={trajectory_index} first_state_extended.shape={first_state_extended.shape}")
+            #print(f"k_index={k_index} trajectory_index={trajectory_index} first_state_extended.shape={first_state_extended.shape}")
 
             #print(f"first_state_observed.shape={first_state_observed.shape}")
             num_steps = states_np.shape[1]
@@ -189,6 +375,9 @@ def analyze_predictions(states_np_list, training_state_np_list, actions_np_list,
 
             # normal koopman prediction
             for step in range(num_steps - 1):
+                if step > koopman_obj.max_plot_steps():
+                    break
+
                 x_extended = test_traj[:, -1:]
                 observed_state_norms.append(np.linalg.norm(x_extended))
 
@@ -244,6 +433,7 @@ def analyze_predictions(states_np_list, training_state_np_list, actions_np_list,
                 ax = axs[k_index, len(ax_index_vars)]
 
                 for other_states_np in training_state_np_list:
+                    other_states_np = koopman_obj.preprocess_trajectory(other_states_np)
                     color = 'gray'
                     zorder = 1
                     lw = 0.1
@@ -253,7 +443,7 @@ def analyze_predictions(states_np_list, training_state_np_list, actions_np_list,
                     ax.plot(xs, ys, '-', color=color, lw=lw, zorder=zorder)
 
             ax = axs[k_index, len(ax_index_vars)]
-            
+
             # plot test data in green
             xs = states_np[0, :]
             ys = states_np[1, :]
@@ -286,13 +476,17 @@ def analyze_predictions(states_np_list, training_state_np_list, actions_np_list,
         
     return koopman_obj_percent_errors
 
-def get_extended_state_identity(X):
+def get_extended_state_identity(X, add_ones=False):
     '''get X with idnetity observables'''
 
     assert len(X.shape) == 2, f"X.shape={X.shape}, expected 2D array"
 
     rv = X.copy()
 
+    if add_ones:
+        one = np.ones((1, X.shape[1]))
+        rv = np.vstack((rv, one))
+   
     return rv
 
 def get_extended_state_rff(X, seed, gamma=1e-4, num_features=200, add_ones=False):

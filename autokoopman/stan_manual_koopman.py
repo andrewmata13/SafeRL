@@ -217,24 +217,7 @@ def predict_with_koopman_rel(A, B, x_extended, u, get_extended_state_func, get_e
 
     return x_prime
 
-def get_centers_ranges(states_np_list, stdout=False):
-    '''get the centers and ranges of the data
-    
-    returns centers, ranges'''
 
-    min_states = np.min(np.array([np.min(states_np, axis=1) for states_np in states_np_list]), axis=0)
-    max_states = np.max(np.array([np.max(states_np, axis=1) for states_np in states_np_list]), axis=0)
-
-    centers = (min_states + max_states) / 2
-    ranges = max_states - min_states
-
-    if stdout:
-        print(f"min_states={min_states}")
-        print(f"max_states={max_states}")
-        print(f"centers={centers}")
-        print(f"ranges={ranges}")
-
-    return centers, ranges
 
 def load_data(max_num_traj=np.inf):
     """load data from file and return states and actions"""
@@ -247,65 +230,6 @@ def load_data(max_num_traj=np.inf):
     print(f"Loaded data in {diff:.2f} seconds")
 
     return states_np_list, actions_np_list
-
-def normalize_matrix(mat, centers, ranges):
-    '''normalize a single 2-d matrix, with columns being the snapshots'''
-
-    # multiply by 2 to make it between -1 and 1
-    norm_data_mat = 2 * (mat - centers[:, np.newaxis]) / ranges[:, np.newaxis]
-
-    assert norm_data_mat.shape == mat.shape, f"norm_data_mat.shape={norm_data_mat.shape} != data_mat.shape={mat.shape}"
-    return norm_data_mat
-
-def denormalize_matrix(norm_data_mat, centers, ranges):
-    '''denormalize a single 2-d matrix, with columns being the snapshots'''
-
-    # multiply by 0.5 since range was 2.0 (between -1 and 1)
-    data_mat = 0.5 * norm_data_mat * ranges[:, np.newaxis] + centers[:, np.newaxis]
-
-    assert data_mat.shape == norm_data_mat.shape, f"data_mat.shape={data_mat.shape} != norm_data_mat.shape={norm_data_mat.shape}"
-    return data_mat
-
-def normalize_single_list(data, centers, ranges, print_label=None):
-    '''normalize a single data set
-    
-    data is a list of 2-d np.arrays, normalization is done on the rows
-    '''
-
-    normalized_data = []
-    for data_mat in data:        
-        norm_data_mat = normalize_matrix(data_mat, centers, ranges)
-
-        normalized_data.append(norm_data_mat)
-
-    return normalized_data
-
-def normalize_data_lists(test_states, test_actions, training_states, training_actions):
-    '''normalize the data based on ranges in training data
-
-    returns norm_tup, test_states, test_actions, training_states, training_actions
-    '''
-
-    start = time.time()
-
-    centers_states, ranges_states = get_centers_ranges(training_states, stdout=True)
-
-    #print(f"Normalizing states using centers={centers_states} ranges={ranges_states}")
-
-    centers_actions, ranges_actions  = get_centers_ranges(training_actions)
-
-    test_states = normalize_single_list(test_states, centers_states, ranges_states)
-
-    test_actions = normalize_single_list(test_actions, centers_actions, ranges_actions)
-    training_states = normalize_single_list(training_states, centers_states, ranges_states)
-    training_actions = normalize_single_list(training_actions, centers_actions, ranges_actions)
-
-    norm_tup = (centers_states, ranges_states, centers_actions, ranges_actions)
-
-    diff = time.time() - start
-    print(f"Normalized data lists in {diff:.2f} seconds")
-
-    return norm_tup, test_states, test_actions, training_states, training_actions
 
 def try_koopman_model(training_states, training_actions, test_states, test_actions, seed, gamma, num_features, plot=True):
     '''train an analyze a koopman model
@@ -357,11 +281,13 @@ def main():
     ko_list = []
     
     ko_list.append(koopman_util.KoopmanIdentity())
+    ko_list.append(koopman_util.KoopmanIdentityNormalized())
 
     gamma = 1e-2
     num_features = 200
+
     ko_list.append(koopman_util.KoopmanRFF(gamma=gamma, num_features=num_features))
-    ko_list.append(koopman_util.KoopmanRFFResets(gamma=gamma, num_features=num_features))
+    ko_list.append(koopman_util.KoopmanRFFNormalized(gamma=gamma, num_features=num_features))
 
     print("training...")
     for kobj in ko_list:
