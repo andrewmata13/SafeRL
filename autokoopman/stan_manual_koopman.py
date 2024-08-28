@@ -280,14 +280,14 @@ def main():
 
     ko_list = []
     
-    ko_list.append(koopman_util.KoopmanIdentity())
-    ko_list.append(koopman_util.KoopmanIdentityNormalized())
+    #ko_list.append(koopman_util.KoopmanIdentity())
+    #ko_list.append(koopman_util.KoopmanIdentityNormalized())
 
-    gamma = 1e-2
-    num_features = 200
+    #gamma = 1e-2
+    num_features = 100
 
-    ko_list.append(koopman_util.KoopmanRFF(gamma=gamma, num_features=num_features))
-    ko_list.append(koopman_util.KoopmanRFFNormalized(gamma=gamma, num_features=num_features))
+    #ko_list.append(koopman_util.KoopmanRFF(gamma=1e-2, num_features=num_features))
+    ko_list.append(koopman_util.KoopmanRFFNormalized(gamma=1e-6, num_features=num_features))
 
     print("training...")
     for kobj in ko_list:
