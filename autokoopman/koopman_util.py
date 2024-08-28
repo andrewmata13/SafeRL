@@ -145,15 +145,17 @@ class KoopmanRFFNormalized(KoopmanRFF):
         self.centers_actions = None
         self.ranges_actions = None
 
-        print("!!! TODO: abstract away normalization somehow (multiple inheritance?) !!! DEBUG EXIT")
-        exit(1)
 
-    def preprocess_trajectory(self, states_np, actions_np):
+    def preprocess_trajectory(self, states_np, actions_np=None):
         '''preprocess a test trajectory, possibly modifying it (for example to normalize)'''
 
         assert self.centers_actions is not None, "Koopman model not trained, call train() first"
         
         normalized_states_np = normalize_single_list([states_np], self.centers_states, self.ranges_states)[0]
+
+        if actions_np is None:
+            return normalized_states_np
+
         normalized_actions_np = normalize_single_list([actions_np], self.centers_actions, self.ranges_actions)[0]
 
         return normalized_states_np, normalized_actions_np
