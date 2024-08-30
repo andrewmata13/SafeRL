@@ -130,6 +130,7 @@ class NormalizationMixin:
         self.centers_states, self.ranges_states = norm_tup
 
         # note we do not normalize actions since error is not based on actions so it wouldn't matter (plus you'd need to add identity action)
+        print(".in train(); 2 / range[0]=", 2 / self.ranges_states[0])
 
         # Call the parent class's train method with normalized data
         super().train(norm_states_np_list, actions_np_list)
@@ -271,6 +272,9 @@ def train_koopman(states_np_list, actions_np_list, data_to_x_xprime_func):
     # print first col of X and X_prime
     print(f"X[0, :]={X[:, 0]}")
     print(f"X_prime[0, :]={X_prime[:, 0]}\n")
+    print()
+
+    print(f"First 6 rows of X for 5 time steps:\n{X[0:6, :5]}")
 
     #Gamma = np.hstack([mat[:,:-1] for mat in actions_np_list])
     Gamma = np.hstack([mat[:,:-1] for mat in actions_np_list])
@@ -317,6 +321,12 @@ def train_koopman(states_np_list, actions_np_list, data_to_x_xprime_func):
         print(f"x first 4: {x0[0:4]}")
         print(f"predicted x' first 4: {predicted[0:4]}")
         print(f"actual x' first 4: {actual[0:4]}")
+
+        # also print what the prediction contribution is from the RFF observables
+        masked_state = x0.copy()
+        x0[0:4] = 0
+        masked_predicted = (A @ x0 + B @ u0)
+        print(f"masked predicted x' first 4: {masked_predicted[0:4]}")
 
         # print abs error for null hypothesis
         abs_error_null = np.linalg.norm(x0p[0:4] - x0[0:4])
