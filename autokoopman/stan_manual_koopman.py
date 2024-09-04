@@ -218,7 +218,7 @@ def predict_with_koopman_rel(A, B, x_extended, u, get_extended_state_func, get_e
     return x_prime
 
 
-
+@cachier(cache_dir='cachier')
 def load_data(max_num_traj=np.inf):
     """load data from file and return states and actions"""
     start = time.time()
@@ -231,44 +231,12 @@ def load_data(max_num_traj=np.inf):
 
     return states_np_list, actions_np_list
 
-def try_koopman_model(training_states, training_actions, test_states, test_actions, seed, gamma, num_features, plot=True):
-    '''train an analyze a koopman model
-    
-    returns percent error (at final time step)
-    '''
-
-    start = time.time()
-
-    state_obs_func = lambda x: get_extended_state_rff(x, seed, gamma=gamma, num_features=num_features)
-    #state_obs_func = lambda x: get_extended_state_identity(x)
-    action_obs_func = lambda x: get_extended_state_identity(x)
-    #action_obs_func = lambda x: get_extended_state_rff(x, seed+1, num_features)
-
-    if NORMALIZE:
-        norm_tup, test_states, test_actions, training_states, training_actions = normalize_data_lists(test_states, test_actions, training_states, training_actions)
-
-    A, B = train_koopman_model(training_states, training_actions, state_obs_func, action_obs_func)
-    diff = time.time() - start
-    print(f"Train model time: {diff:.2f} seconds")
-
-    #print(f"A:\n{A}")
-    #print(f"B:\n{B}")
-    #print("debug exit")
-    #exit(1)
-
-    #print(f"norm of A: {np.linalg.norm(A)}")
-    #print(f"norm of B: {np.linalg.norm(B)}")
-
-    percent_error = plot_predictions(A, B, test_states, training_states, test_actions, state_obs_func, action_obs_func, plot=plot)
-    return percent_error
-
 def main():
     ''' main entry point'''
 
     # Set NumPy to raise an error on overflow
     np.seterr(over='raise', invalid='raise')
     np.set_printoptions(suppress=True) # no scientific notation
-
 
     num_traj = 100
 
@@ -279,22 +247,47 @@ def main():
     test_states, test_actions, validation_states, validation_actions, training_states, training_actions = split_data
 
     ko_list = []
+
+    if False:
+        plot_name = "koop1_dmd_vs_rff.png"
+        ko_list.append(koopman_util.KoopmanIdentity())
+        ko_list.append(koopman_util.KoopmanRFF(gamma=1e-4, num_features=500))
     
-    #ko_list.append(koopman_util.KoopmanIdentity())
+    if False:
+        plot_name = "koop2_dmd_rel.png"
+        ko_list.append(koopman_util.KoopmanIdentity())
+        ko_list.append(koopman_util.KoopmanIdentityRelative())
+        ko_list.append(koopman_util.KoopmanIdentityRelative(rotate=True))
+
+
+    if False:
+        plot_name = "koop3_rff_rel.png"
+        ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e0, num_features=500))
+        ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-1, num_features=500))
+        ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-2, num_features=500))
+        ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-3, num_features=500))
+        ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-4, num_features=500))
+    
+    plot_name = "koop4_rff_rel_features.png"
+    ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-2, num_features=500))
+    ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-2, num_features=200))
+    ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-2, num_features=100))
+    ko_list.append(koopman_util.KoopmanIdentityRelative())
+    
     #ko_list.append(koopman_util.KoopmanIdentityNormalized())
 
-    #gamma = 1e-2
-    num_features = 100
+    gamma = 1e-3
+    num_features = 500
 
-    #ko_list.append(koopman_util.KoopmanRFF(gamma=1e-2, num_features=num_features))
-    ko_list.append(koopman_util.KoopmanRFFNormalized(gamma=1e-6, num_features=num_features))
+    #ko_list.append(koopman_util.KoopmanRFFRelative(gamma=gamma, num_features=num_features))
+    #ko_list.append(koopman_util.KoopmanRFFNormalized(gamma=gamma, num_features=num_features))
 
     print("training...")
     for kobj in ko_list:
         kobj.train(training_states, training_actions)
 
     print("plotting...")
-    koopman_util.analyze_predictions(test_states, training_states, test_actions, ko_list, plot=True)
+    koopman_util.analyze_predictions(test_states, training_states, test_actions, ko_list, plot_name=plot_name)
 
 def main2():
     '''main entry point (original)'''

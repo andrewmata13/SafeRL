@@ -71,6 +71,94 @@ class KoopmanIdentity:
         '''maximum number of steps to plot'''
 
         return np.inf
+    
+def make_rotation_matrix(theta):
+    '''make a 2D rotation matrix'''
+
+
+    assert isinstance(theta, float), f"theta={theta} is not a float: {theta} (type={type(theta)})"
+
+    return np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
+        
+class KoopmanIdentityRelative(KoopmanIdentity):
+
+    def __init__(self, rotate=False):
+        name = f"Relative $DMD$"
+
+        if rotate:
+            name += f" (w/ rotation)"
+
+        KoopmanIdentity.__init__(self, name=name)
+        
+        self.rotate = rotate
+
+    def data_to_x_xprime(self, state_np, state_prime_np):
+        '''convert a single data point to x and x' for koopman training'''
+
+        x = state_np.copy()
+        xp = state_prime_np.copy()
+
+        for dim in (0, 1):
+            x[dim, :] -= state_np[dim, :] # should make the var value zero
+            xp[dim, :] -= state_np[dim, :]
+
+        if self.rotate:
+            THETA_DIM = 2
+
+            theta = state_np[THETA_DIM, 0]
+            R_neg_theta = make_rotation_matrix(-theta)
+
+            x[0:2, :] = R_neg_theta @ x[0:2, :]
+            x[THETA_DIM, :] -= theta
+
+            xp[0:2, :] = R_neg_theta @ xp[0:2, :]
+            xp[THETA_DIM, :] -= theta
+
+            # assert x[0], x[1], and x[2] is now zero
+            assert np.linalg.norm(x[0:3, :]) < 1e-6, f"np.linalg.norm(x[0:3, :])={np.linalg.norm(x[0:3, :])}"
+
+        return x, xp
+    
+    def predict(self, x_extended, u):
+        '''predict the next state using the koopman model
+    
+        returns the next extended state
+        '''
+
+        assert self.A is not None, "Koopman model not trained, call train() first"
+
+        x_relative = x_extended.copy()
+
+        # translate
+        for dim in (0, 1):
+            x_relative[dim, :] -= x_extended[dim, :]
+
+        # rotate
+        if self.rotate:
+            THETA_DIM = 2
+
+            theta = x_extended[THETA_DIM, 0]
+            R_neg_theta = make_rotation_matrix(-theta)
+            x_relative[0:2, :] = R_neg_theta @ x_relative[0:2, :]
+            x_relative[THETA_DIM, :] -= theta
+
+        # (optional) make extended state
+
+        # predict
+        result = self.A @ x_relative + self.B @ u
+
+        # rotate back
+        if self.rotate:
+            theta = x_extended[THETA_DIM, 0]
+            R_theta = make_rotation_matrix(theta)
+            result[0:2, :] = R_theta @ result[0:2, :]
+            result[THETA_DIM, :] += theta
+
+        # translate back
+        for dim in (0, 1):
+            result[dim, :] += x_extended[dim, :]
+
+        return result
 
 class KoopmanRFF(KoopmanIdentity):
 
@@ -87,7 +175,57 @@ class KoopmanRFF(KoopmanIdentity):
 
         rv = get_extended_state_rff(state_np, self.seed, gamma=self.gamma, num_features=self.num_features)
 
-        return rv 
+        return rv
+
+class KoopmanRFFRelative(KoopmanRFF):
+
+    def __init__(self, gamma, num_features, name='Relative $RFF$', seed=1985):
+        # rotate is not an option since RFF is not needed if rotate is used
+
+        super().__init__(gamma, num_features, name=name, seed=seed)
+
+        
+    def data_to_x_xprime(self, state_np, state_prime_np):
+        '''convert a single data point to x and x' for koopman training'''
+
+        x = state_np.copy()
+        xp = state_prime_np.copy()
+
+        for dim in (0, 1):
+            x[dim, :] -= state_np[dim, :] # should make the var value zero
+            xp[dim, :] -= state_np[dim, :]
+
+        # extend states
+        extended_x = self.get_extended_single_state(x)
+        extended_xp = self.get_extended_single_state(xp)
+
+        return extended_x, extended_xp
+    
+    def predict(self, x_extended, u):
+        '''predict the next state using the koopman model
+    
+        returns the next extended state
+        '''
+
+        assert self.A is not None, "Koopman model not trained, call train() first"
+
+        x_relative = x_extended.copy()[0:4]
+
+        # translate
+        for dim in (0, 1):
+            x_relative[dim, :] -= x_extended[dim, :]
+
+        # make extended state
+        x_rel_extended = self.get_extended_single_state(x_relative)
+
+        # predict
+        result = self.A @ x_rel_extended + self.B @ u
+
+        # translate back
+        for dim in (0, 1):
+            result[dim, :] += x_extended[dim, :]
+
+        return result 
     
 class NormalizationMixin:
     '''a mix-in class to be used for multiple inheritance to normalize data before training and testing a Koopman model'''
@@ -130,7 +268,7 @@ class NormalizationMixin:
         self.centers_states, self.ranges_states = norm_tup
 
         # note we do not normalize actions since error is not based on actions so it wouldn't matter (plus you'd need to add identity action)
-        print(".in train(); 2 / range[0]=", 2 / self.ranges_states[0])
+        #print(".in train(); 2 / range[0]=", 2 / self.ranges_states[0])
 
         # Call the parent class's train method with normalized data
         super().train(norm_states_np_list, actions_np_list)
@@ -270,11 +408,11 @@ def train_koopman(states_np_list, actions_np_list, data_to_x_xprime_func):
     X_prime = np.hstack(X_prime_mats)
 
     # print first col of X and X_prime
-    print(f"X[0, :]={X[:, 0]}")
-    print(f"X_prime[0, :]={X_prime[:, 0]}\n")
-    print()
+    #print(f"X[0, :]={X[:, 0]}")
+    #print(f"X_prime[0, :]={X_prime[:, 0]}\n")
+    #print()
 
-    print(f"First 6 rows of X for 5 time steps:\n{X[0:6, :5]}")
+    #print(f"First 6 rows of X for 5 time steps:\n{X[0:6, :5]}")
 
     #Gamma = np.hstack([mat[:,:-1] for mat in actions_np_list])
     Gamma = np.hstack([mat[:,:-1] for mat in actions_np_list])
@@ -295,47 +433,48 @@ def train_koopman(states_np_list, actions_np_list, data_to_x_xprime_func):
     print(f"A norm={np.linalg.norm(A)} B norm={np.linalg.norm(B)}")
 
     # print first row of A and B
-    print(f"A[0, :]={A[0, :]}")
-    print(f"B[0, :]={B[0, :]}\n")
+    #print(f"A[0, :]={A[0, :]}")
+    #print(f"B[0, :]={B[0, :]}\n")
 
-    print(f"num cols: {X.shape[1]}")
+    #print(f"num cols: {X.shape[1]}")
 
-    print(f"B first 4 rows:\n{B[0:4, :]}")
+    #print(f"B first 4 rows:\n{B[0:4, :]}")
 
-    for c in range(1):
-        x0 = X[:, c]
-        u0 = Gamma[:, c]
-        x0p = X_prime[:, c]
+    if False:
+        for c in range(1):
+            x0 = X[:, c]
+            u0 = Gamma[:, c]
+            x0p = X_prime[:, c]
 
-        # print A * x0 + B * u0 and compare with x0p
-        #print(f"A @ xc + B @ uc={A @ x0 + B @ u0}")
-        #print(f"xcp={x0p}\n")
-        abs_error = np.linalg.norm((A @ x0 + B @ u0) - x0p)
-        print(f"c={c} abs_error={abs_error:.6f}, abs_error_first_4={np.linalg.norm((A @ x0 + B @ u0)[0:4] - x0p[0:4]):.6f}")
+            # print A * x0 + B * u0 and compare with x0p
+            #print(f"A @ xc + B @ uc={A @ x0 + B @ u0}")
+            #print(f"xcp={x0p}\n")
+            abs_error = np.linalg.norm((A @ x0 + B @ u0) - x0p)
+            print(f"c={c} abs_error={abs_error:.6f}, abs_error_first_4={np.linalg.norm((A @ x0 + B @ u0)[0:4] - x0p[0:4]):.6f}")
 
-        
+            
 
-        predicted = (A @ x0 + B @ u0)
-        actual = x0p
+            predicted = (A @ x0 + B @ u0)
+            actual = x0p
 
-        print(f"x first 4: {x0[0:4]}")
-        print(f"predicted x' first 4: {predicted[0:4]}")
-        print(f"actual x' first 4: {actual[0:4]}")
+            print(f"x first 4: {x0[0:4]}")
+            print(f"predicted x' first 4: {predicted[0:4]}")
+            print(f"actual x' first 4: {actual[0:4]}")
 
-        # also print what the prediction contribution is from the RFF observables
-        masked_state = x0.copy()
-        x0[0:4] = 0
-        masked_predicted = (A @ x0 + B @ u0)
-        print(f"masked predicted x' first 4: {masked_predicted[0:4]}")
+            # also print what the prediction contribution is from the RFF observables
+            masked_state = x0.copy()
+            x0[0:4] = 0
+            masked_predicted = (A @ x0 + B @ u0)
+            print(f"masked predicted x' first 4: {masked_predicted[0:4]}")
 
-        # print abs error for null hypothesis
-        abs_error_null = np.linalg.norm(x0p[0:4] - x0[0:4])
-        print(f"abs_error_null first 4={abs_error_null:.6f}\n")
+            # print abs error for null hypothesis
+            abs_error_null = np.linalg.norm(x0p[0:4] - x0[0:4])
+            print(f"abs_error_null first 4={abs_error_null:.6f}\n")
 
     
     return A, B
 
-def analyze_predictions(states_np_list, training_state_np_list, actions_np_list, koopman_obj_list, plot=False):
+def analyze_predictions(states_np_list, training_state_np_list, actions_np_list, koopman_obj_list, plot_name=None, plot_norms=False):
     '''analyze predictions from multiple koopman objects
     
     returns the average relative error at the last time step, for each koopman object (a list)
@@ -354,8 +493,11 @@ def analyze_predictions(states_np_list, training_state_np_list, actions_np_list,
     #ax_index_vars = [(0, 1)]
     #ax_index_labels = [("X", "Y")]
 
-    if plot:
-        horz_plots = len(ax_index_vars) + 3
+    if plot_name is not None:
+        horz_plots = len(ax_index_vars) + 2
+
+        if plot_norms:
+            horz_plots += 1
 
         fig, axs = plt.subplots(num_koopman_objs, horz_plots, figsize=figsize)
 
@@ -414,9 +556,9 @@ def analyze_predictions(states_np_list, training_state_np_list, actions_np_list,
                 test_traj = np.hstack((test_traj, x_prime_exteneded))
 
             last_percent_errors.append(percent_errors[-1])
-            print(f"last_percent_error: {percent_errors[-1]}")
+            #print(f"last_percent_error: {percent_errors[-1]}")
 
-            if plot == False:
+            if plot_name is None:
                 continue
             
             test_traj = test_traj.T
@@ -442,7 +584,9 @@ def analyze_predictions(states_np_list, training_state_np_list, actions_np_list,
 
                 axs[k_index, len(ax_index_vars)].set_title(f"Training Data")
                 axs[k_index, len(ax_index_vars) + 1].set_title(f"Percent Error")
-                axs[k_index, len(ax_index_vars) + 2].set_title(f"Extended State Norm")
+
+                if plot_norms:
+                    axs[k_index, len(ax_index_vars) + 2].set_title(f"Extended State Norm")
 
                 # plot training data 
                 ax = axs[k_index, len(ax_index_vars)]
@@ -474,19 +618,21 @@ def analyze_predictions(states_np_list, training_state_np_list, actions_np_list,
             ax.set_xlabel("Time Step")
             ax.set_ylabel("Percent Error (%)")
 
-            # plot norm of state
-            ax_index = 2 + len(ax_index_vars)
-            ax = axs[k_index, ax_index]
-            ax.plot(observed_state_norms, label=koopman_obj.name, color=traj_color)
-            ax.set_xlabel("Time Step")
-            ax.set_ylabel("2-Norm Observed State")
+            if plot_norms:
+                # plot norm of state
+                ax_index = 2 + len(ax_index_vars)
+                ax = axs[k_index, ax_index]
+                ax.plot(observed_state_norms, label=koopman_obj.name, color=traj_color)
+                ax.set_xlabel("Time Step")
+                ax.set_ylabel("2-Norm Observed State")
 
         avg = np.average(last_percent_errors)
         koopman_obj_percent_errors.append(avg)
 
-    if plot:
+    if plot_name is not None:
         plt.tight_layout()
-        plt.savefig("stan_koopman.png")
+        plt.savefig(plot_name)
+        print(f"Saved plot to {plot_name}")
         #plt.show()
         
     return koopman_obj_percent_errors
