@@ -163,7 +163,7 @@ class KoopmanIdentityRelative(KoopmanIdentity):
 class KoopmanRFF(KoopmanIdentity):
 
     def __init__(self, gamma, num_features, name='$RFF$', seed=1985):
-        fullname = f"{name} ($\gamma$={gamma}, $N_{{obs}}$={num_features})"
+        fullname = f"{name} ($\\gamma$={gamma}, $N_{{obs}}$={num_features})"
         super().__init__(fullname)
 
         self.seed = seed
@@ -176,13 +176,85 @@ class KoopmanRFF(KoopmanIdentity):
         rv = get_extended_state_rff(state_np, self.seed, gamma=self.gamma, num_features=self.num_features)
 
         return rv
+    
+class KoopmanExperimental(KoopmanRFF):
+    """copied from relative RFF"""
+
+    def __init__(self, gamma, num_features, name='Experimental', seed=1985):
+
+        super().__init__(gamma, num_features, name=name, seed=seed)
+        
+    def data_to_x_xprime(self, state_np, state_prime_np):
+        '''convert a single data point to x and x' for koopman training'''
+
+        x_extended = get_extended_state_rff(state_np, self.seed, gamma=self.gamma, num_features=self.num_features)
+        xp_extended = get_extended_state_rff(state_prime_np, self.seed, gamma=self.gamma, num_features=self.num_features)
+
+        rel_x = state_np.copy()
+        rel_xp = state_prime_np.copy()
+
+        for dim in (0, 1, 2, 3):
+            rel_x[dim, :] -= state_np[dim, :] # should make the var value zero
+            rel_xp[dim, :] -= state_np[dim, :]
+
+        # extend states
+        x_stack = np.vstack((rel_x, x_extended))
+        xp_stack = np.vstack((rel_xp, xp_extended))
+
+        return x_stack, xp_stack
+    
+    def get_extended_single_state(self, state_np):
+        '''get the extended state, for the first state in a trajectory'''
+
+        #rv = get_extended_state_rff(state_np, self.seed, gamma=self.gamma, num_features=self.num_features)
+
+        return state_np #rv
+    
+    def predict(self, x_orig_extended, u):
+        '''predict the next state using the koopman model
+    
+        returns the next extended state
+        '''
+
+        assert self.A is not None, "Koopman model not trained, call train() first"
+
+        x_relative = x_orig_extended.copy()[0:4]
+
+        x_extended = get_extended_state_rff(x_relative, self.seed, gamma=self.gamma, num_features=self.num_features)
+
+        # translate
+        for dim in (0, 1, 2, 3):
+            x_relative[dim, :] -= x_relative[dim, :]
+
+        # make extended state
+        x_stack = np.vstack((x_relative, x_extended))
+
+        assert x_stack.shape[0] == self.A.shape[1], f"x_stack.shape={x_stack.shape} != self.A.shape[1]={self.A.shape[1]}"
+
+        # predict
+        result = self.A @ x_stack + self.B @ u
+
+        # translate back
+        for dim in (0, 1, 2, 3):
+            result[dim, :] += x_orig_extended[dim, :]
+
+        result = result[0:4, :]
+        assert result.shape == x_orig_extended.shape, f"result.shape={result.shape} != x_orig_extended.shape={x_orig_extended.shape}"
+
+        return result 
 
 class KoopmanRFFRelative(KoopmanRFF):
 
-    def __init__(self, gamma, num_features, name='Relative $RFF$', seed=1985):
+    def __init__(self, gamma, num_features, rotate=False, name='Relative $RFF$', seed=1985):
         # rotate is not an option since RFF is not needed if rotate is used
 
+        if rotate:
+            name += f" (w/ rotation)"
+
         super().__init__(gamma, num_features, name=name, seed=seed)
+
+
+        self.rotate = rotate
 
         
     def data_to_x_xprime(self, state_np, state_prime_np):
@@ -194,6 +266,21 @@ class KoopmanRFFRelative(KoopmanRFF):
         for dim in (0, 1):
             x[dim, :] -= state_np[dim, :] # should make the var value zero
             xp[dim, :] -= state_np[dim, :]
+
+        if self.rotate:
+            THETA_DIM = 2
+
+            theta = state_np[THETA_DIM, 0]
+            R_neg_theta = make_rotation_matrix(-theta)
+
+            x[0:2, :] = R_neg_theta @ x[0:2, :]
+            x[THETA_DIM, :] -= theta
+
+            xp[0:2, :] = R_neg_theta @ xp[0:2, :]
+            xp[THETA_DIM, :] -= theta
+
+            # assert x[0], x[1], and x[2] is now zero
+            assert np.linalg.norm(x[0:3, :]) < 1e-6, f"np.linalg.norm(x[0:3, :])={np.linalg.norm(x[0:3, :])}"
 
         # extend states
         extended_x = self.get_extended_single_state(x)
@@ -215,11 +302,27 @@ class KoopmanRFFRelative(KoopmanRFF):
         for dim in (0, 1):
             x_relative[dim, :] -= x_extended[dim, :]
 
+        # rotate
+        if self.rotate:
+            THETA_DIM = 2
+
+            theta = x_extended[THETA_DIM, 0]
+            R_neg_theta = make_rotation_matrix(-theta)
+            x_relative[0:2, :] = R_neg_theta @ x_relative[0:2, :]
+            x_relative[THETA_DIM, :] -= theta
+
         # make extended state
         x_rel_extended = self.get_extended_single_state(x_relative)
 
         # predict
         result = self.A @ x_rel_extended + self.B @ u
+
+        # rotate back
+        if self.rotate:
+            theta = x_extended[THETA_DIM, 0]
+            R_theta = make_rotation_matrix(theta)
+            result[0:2, :] = R_theta @ result[0:2, :]
+            result[THETA_DIM, :] += theta
 
         # translate back
         for dim in (0, 1):
@@ -551,9 +654,14 @@ def analyze_predictions(states_np_list, training_state_np_list, actions_np_list,
 
                 u = actions_np[:, step:step+1]
 
-                x_prime_exteneded = koopman_obj.predict(x_extended, u)
+                try:
+                    x_prime_exteneded = koopman_obj.predict(x_extended, u)
+                    test_traj = np.hstack((test_traj, x_prime_exteneded))
+                except:
+                    print(f"Error predicting step={step} for trajectory_index={trajectory_index} k_index={k_index}")
+                    break
                 
-                test_traj = np.hstack((test_traj, x_prime_exteneded))
+                
 
             last_percent_errors.append(percent_errors[-1])
             #print(f"last_percent_error: {percent_errors[-1]}")
@@ -634,6 +742,7 @@ def analyze_predictions(states_np_list, training_state_np_list, actions_np_list,
         plt.savefig(plot_name)
         print(f"Saved plot to {plot_name}")
         #plt.show()
+        plt.close()
         
     return koopman_obj_percent_errors
 
@@ -658,7 +767,6 @@ def get_extended_state_rff(X, seed, gamma=1e-4, num_features=200):
     '''get X with rff observables
     
     this also duplicates the variables as part of the observables
-    if add_one=True, this also adds a constant 1 to the observables at each step
     '''
 
     assert len(X.shape) == 2, f"X.shape={X.shape}, expected 2D array"

@@ -1,6 +1,11 @@
+
+import matplotlib
+from matplotlib import pyplot as plt
 import numpy as np
 import json
 import time
+import os
+import pickle
 
 import koopman_util
 
@@ -39,7 +44,7 @@ def make_states(lead_x_list, lead_y_list, wingman_x_list, wingman_y_list, lead_s
 
 
 @cachier(cache_dir='cachier')
-def load_json(file_path="../output/expr_20240522_143535/PPO_DubinsRejoin_15bc3_00000_0_2024-05-22_14-35-38/eval/ckpt_200/eval.log"):
+def load_json(file_path):
 
     start = time.time()
 
@@ -218,27 +223,237 @@ def predict_with_koopman_rel(A, B, x_extended, u, get_extended_state_func, get_e
     return x_prime
 
 
-@cachier(cache_dir='cachier')
-def load_data(max_num_traj=np.inf):
+def load_data(max_num_traj=np.inf, cache_filename="dubins_data.pkl"):
     """load data from file and return states and actions"""
+
+
     start = time.time()
 
-    data = load_json()
-    states_np_list, actions_np_list = extract_states_actions(data, max_num_traj=max_num_traj)
+    # if cache_filename exists, load it
+    if os.path.exists(cache_filename):
+        with open(cache_filename, 'rb') as file:
+            data = pickle.load(file)
+        
+        print(f"Loaded data from {cache_filename}")
+        states_np_list, actions_np_list = data
+
+    else:
+        assert cache_filename == "dubins_data.pkl", f"filename={cache_filename} not found, expected dubins_data.pkl if you want to load from SafeRL rollouts"
+        
+        #file_path="../output/expr_20240522_143535/PPO_DubinsRejoin_15bc3_00000_0_2024-05-22_14-35-38/eval/ckpt_200/eval.log"
+        file_path="../output/expr_20240918_143039/PPO_DubinsRejoin_1c75e_00000_0_2024-09-18_14-30-42/eval/ckpt_200/eval.log"
+        data = load_json(file_path)
+        states_np_list, actions_np_list = extract_states_actions(data, max_num_traj=max_num_traj)
+
+        with open(cache_filename, 'wb') as file:
+            pickle.dump((states_np_list, actions_np_list), file)
+            print(f"Saved data to {cache_filename}")
 
     diff = time.time() - start
     print(f"Loaded data in {diff:.2f} seconds")
 
     return states_np_list, actions_np_list
 
-def main():
+def main_f16_koopman():
     ''' main entry point'''
+
+    dubins_file_path = "dubins_data.pkl"
+    f16_file_path = "f16_trajs.pkl"
+
+    with open(dubins_file_path, 'rb') as file:
+        dubins_data = pickle.load(file)
+        
+    print(f"Loaded data from {dubins_file_path}")
+    dubins_states_np_list, dubins_actions_np_list = dubins_data
+
+    num_trajectories = len(dubins_states_np_list)
+    print(f"Loaded {num_trajectories} trajectories from {dubins_file_path}, first with {dubins_states_np_list[0].shape[1]} time steps")
+
+    with open(f16_file_path, 'rb') as file:
+        f16_data = pickle.load(file)
+
+    print(f"Loaded {len(f16_data)} trajectories from {f16_file_path}, first with {len(f16_data[0])} time steps")
+    assert num_trajectories == len(f16_data), f"num_trajectories={num_trajectories}, expected {len(f16_data)}"
+
+    # fix data format from f16 to match dubins
+
+    for traj_index in range(num_trajectories):#[14]:
+        dubins_traj_one = dubins_states_np_list[traj_index]
+        
+        f16_data[traj_index] = np.array(f16_data[traj_index][:dubins_traj_one.shape[1]]) # truncate to same length as dubins
+        # f16_first_state[2] = -f16_first_state[2] + np.pi/2
+        f16_data[traj_index][:, 2] = -f16_data[traj_index][:, 2] + np.pi/2 # adjustment between phi and heading
+        f16_traj_one = f16_data[traj_index]
+
+        # translate to origin and rotate to zero heading
+        init_x = f16_traj_one[0][0]
+        init_y = f16_traj_one[0][1]
+        init_heading = f16_traj_one[0][2]
+        #rotate_matrix = np.array([[np.cos(init_heading), -np.sin(init_heading)], [np.sin(init_heading), np.cos(init_heading)]])
+        rotate_matrix = make_rotation_matrix(-init_heading)
+        #rotate_matrix = make_rotation_matrix(0)
+
+        #dx = f16_traj_one[1][0] - f16_traj_one[0][0]
+        #dy = f16_traj_one[1][1] - f16_traj_one[0][1]
+        #print(f"dx: {dx}, dy: {dy}, atan2: {np.arctan2(dy, dx)}, init_heading: {init_heading}")
+
+        #print(f"init_heading: {init_heading}")
+
+        for step in range(f16_traj_one.shape[0]):
+            f16_traj_one[step][0] -= init_x
+            f16_traj_one[step][1] -= init_y
+
+            scale_pos = 5e4
+            scale_speed = 1e2
+            x = f16_traj_one[step][0] / scale_pos
+            y = f16_traj_one[step][1] / scale_pos
+            pt = np.array([[x], [y]], dtype=float)
+
+            rot_pt = rotate_matrix @ pt
+
+            f16_traj_one[step][0] = rot_pt[0, 0]
+            f16_traj_one[step][1] = rot_pt[1, 0]
+
+            new_x = f16_traj_one[step][0]
+            new_y = f16_traj_one[step][1]
+
+            #print(f"{step}. {x}, {y} -> {new_x}, {new_y}")
+
+            f16_traj_one[step][2] -= init_heading
+            f16_traj_one[step][3] /= scale_speed
+            
+
+        # plot the first trajectory x and y
+        #plt.plot(f16_traj_one[:, 0], f16_traj_one[:, 1], 'b-', label='F16')
+        # make it square
+        #plt.axis('equal')
+        #plt.show()
+        #exit(1)
+
+        f16_data[traj_index] = f16_data[traj_index].T
+
+    # shuffle f16_data and dubins_acions_np_list in the same way using seed 5000
+    seed = 500
+    np.random.seed(seed)
+
+    ####################### make koopman model here from f16 data and dubins_actions_np_list ######################
+
+    split_data = koopman_util.split_test_validation_train(f16_data, dubins_actions_np_list, num_test=3, num_validation=3)
+    test_states, test_actions, validation_states, validation_actions, training_states, training_actions = split_data
 
     # Set NumPy to raise an error on overflow
     np.seterr(over='raise', invalid='raise')
     np.set_printoptions(suppress=True) # no scientific notation
 
-    num_traj = 100
+    for plot_index in [4]: #[1, 2, 3, 4]:
+        ko_list = []
+
+        if plot_index == 1:
+            plot_name = "plots/f16_koop1_dmd_vs_rff.png"
+            ko_list.append(koopman_util.KoopmanIdentity())
+            #ko_list.append(koopman_util.KoopmanRFF(gamma=1e-4, num_features=500))
+            ko_list.append(koopman_util.KoopmanExperimental(gamma=1e-2, num_features=500))
+            ko_list.append(koopman_util.KoopmanExperimental(gamma=1e0, num_features=500))
+            ko_list.append(koopman_util.KoopmanExperimental(gamma=1e2, num_features=500))
+            #ko_list.append(koopman_util.KoopmanExperimental(gamma=1e4, num_features=500))
+        
+        if plot_index == 2:
+            plot_name = "plots/f16_koop2_dmd_rel.png"
+            ko_list.append(koopman_util.KoopmanIdentity())
+            ko_list.append(koopman_util.KoopmanIdentityRelative())
+            ko_list.append(koopman_util.KoopmanIdentityRelative(rotate=True))
+            ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-2, num_features=500, rotate=True))
+
+        if plot_index == 3:
+            plot_name = "plots/f16_koop3_rff_rel_gamma.png"
+            ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e0, num_features=500))
+            ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-1, num_features=500))
+            ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-2, num_features=500))
+            ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-3, num_features=500))
+            ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-4, num_features=500))
+
+        if plot_index == 3.5:
+            plot_name = "plots/f16_koop3.5_rff_rel_gamma_rotate.png"
+            
+            ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-2, num_features=500))
+            ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-2, num_features=500, rotate=True))
+
+            ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-3, num_features=500))
+            ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-3, num_features=500, rotate=True))
+            #ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-4, num_features=500))
+            #ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-4, num_features=500, rotate=True))
+
+            ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-4, num_features=500))
+            ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-4, num_features=500, rotate=True))
+            
+        
+        if plot_index == 4:
+            plot_name = "plots/f16_koop4_rff_rel_features.png"
+            ko_list.append(koopman_util.KoopmanIdentity())
+            #ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-3, num_features=100, rotate=rotate))
+            #ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-3, num_features=75, rotate=rotate))
+            ko_list.append(koopman_util.KoopmanRFF(gamma=1e3, num_features=25))
+            ko_list.append(koopman_util.KoopmanRFF(gamma=1e2, num_features=50))
+            ko_list.append(koopman_util.KoopmanRFF(gamma=1e1, num_features=100))
+            ko_list.append(koopman_util.KoopmanRFF(gamma=1e0, num_features=200))
+        
+
+        print("training...")
+        for kobj in ko_list:
+            kobj.train(training_states, training_actions)
+
+        print("plotting...")
+        koopman_util.analyze_predictions(test_states, training_states, test_actions, ko_list, plot_name=plot_name)
+
+    print("Exit before plots 3.1415")
+    exit(1)
+
+    matplotlib.use('TkAgg') # set backend
+    plt.style.use(['bmh', 'bak_matplotlib.mlpstyle'])
+
+    for traj_index in [0]: #range(num_trajectories):#[14]:
+        traj_one = dubins_states_np_list[traj_index]
+              
+        f16_first_state = f16_data[traj_index][:, 0]
+        dubins_first_state = traj_one[:, 0]
+
+        #actions_one = actions_np_list[traj_index]
+        dubins_xs = traj_one[0, :] # x0, y0, heading0, v0
+        dubins_ys = traj_one[1, :]
+    
+        f16_xs = f16_data[traj_index][0, :] # x0, y0, heading0, v0
+        f16_ys = f16_data[traj_index][1, :]
+
+        ######        
+        fig = plt.figure(figsize=(10, 10))
+        ax = fig.add_subplot(1, 1, 1)
+
+        ax.plot(dubins_xs, dubins_ys, 'r-', label='Dubins')
+        ax.plot(f16_xs, f16_ys, 'b-', label='F16')
+
+        # set x and y label
+        ax.set_xlabel('X Position (ft)')
+        ax.set_ylabel('Y Position (ft)')
+
+        # add label 'start' to the first point
+        ax.text(dubins_xs[0], dubins_ys[0], ' Start', fontsize=14, color='black')
+
+        ax.set_title(f'Trajectory #{traj_index}')
+        ax.legend()
+        filename = f"plots/traj_{traj_index}.png"
+        plt.savefig(filename)
+        plt.close()
+
+        print(f"Made {filename}")
+
+def main_dubins():
+    '''main entry point using dubins data'''
+
+    # Set NumPy to raise an error on overflow
+    np.seterr(over='raise', invalid='raise')
+    np.set_printoptions(suppress=True) # no scientific notation
+
+    num_traj = np.inf #100
 
     print("loading data...")
     states_np_list, actions_np_list = load_data(max_num_traj=num_traj)
@@ -248,31 +463,38 @@ def main():
 
     ko_list = []
 
-    if False:
+    plot_index = 4
+
+    if plot_index == 1:
         plot_name = "koop1_dmd_vs_rff.png"
-        ko_list.append(koopman_util.KoopmanIdentity())
-        ko_list.append(koopman_util.KoopmanRFF(gamma=1e-4, num_features=500))
+        #ko_list.append(koopman_util.KoopmanIdentity())
+        #ko_list.append(koopman_util.KoopmanRFF(gamma=1e-4, num_features=500))
+        ko_list.append(koopman_util.KoopmanExperimental(gamma=1e-2, num_features=500))
+        ko_list.append(koopman_util.KoopmanExperimental(gamma=1e0, num_features=500))
+        ko_list.append(koopman_util.KoopmanExperimental(gamma=1e2, num_features=500))
+        ko_list.append(koopman_util.KoopmanExperimental(gamma=1e4, num_features=500))
     
-    if False:
+    if plot_index == 2:
         plot_name = "koop2_dmd_rel.png"
         ko_list.append(koopman_util.KoopmanIdentity())
         ko_list.append(koopman_util.KoopmanIdentityRelative())
         ko_list.append(koopman_util.KoopmanIdentityRelative(rotate=True))
 
 
-    if False:
-        plot_name = "koop3_rff_rel.png"
+    if plot_index == 3:
+        plot_name = "koop3_rff_rel_gamma.png"
         ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e0, num_features=500))
         ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-1, num_features=500))
         ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-2, num_features=500))
         ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-3, num_features=500))
         ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-4, num_features=500))
     
-    plot_name = "koop4_rff_rel_features.png"
-    ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-2, num_features=500))
-    ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-2, num_features=200))
-    ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-2, num_features=100))
-    ko_list.append(koopman_util.KoopmanIdentityRelative())
+    if plot_index == 4:
+        plot_name = "koop4_rff_rel_features.png"
+        ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-2, num_features=500))
+        ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-2, num_features=200))
+        ko_list.append(koopman_util.KoopmanRFFRelative(gamma=1e-2, num_features=100))
+        ko_list.append(koopman_util.KoopmanIdentityRelative())
     
     #ko_list.append(koopman_util.KoopmanIdentityNormalized())
 
@@ -330,6 +552,10 @@ def main2():
     print(f"\nPlotting best hyperparameters: {best_hyperparams}")
 
     try_koopman_model(training_states, training_actions, test_states, test_actions, seed, best_hyperparams["gamma"], best_hyperparams["num_features"], plot=True)
+
+def main():
+    #main_dubins()
+    main_f16_koopman()
 
 if __name__ == '__main__':
     main()
