@@ -6,6 +6,8 @@ import json
 import time
 import os
 import pickle
+import argparse
+import sys
 
 import koopman_util
 
@@ -223,7 +225,7 @@ def predict_with_koopman_rel(A, B, x_extended, u, get_extended_state_func, get_e
     return x_prime
 
 
-def load_data(max_num_traj=np.inf, cache_filename="dubins_data.pkl"):
+def load_data(eval_file_path, max_num_traj=np.inf, cache_filename="dubins_data.pkl"):
     """load data from file and return states and actions"""
 
 
@@ -240,9 +242,8 @@ def load_data(max_num_traj=np.inf, cache_filename="dubins_data.pkl"):
     else:
         assert cache_filename == "dubins_data.pkl", f"filename={cache_filename} not found, expected dubins_data.pkl if you want to load from SafeRL rollouts"
         
-        #file_path="../output/expr_20240522_143535/PPO_DubinsRejoin_15bc3_00000_0_2024-05-22_14-35-38/eval/ckpt_200/eval.log"
-        file_path="../output/expr_20240918_143039/PPO_DubinsRejoin_1c75e_00000_0_2024-09-18_14-30-42/eval/ckpt_200/eval.log"
-        data = load_json(file_path)
+        
+        data = load_json(eval_file_path)
         states_np_list, actions_np_list = extract_states_actions(data, max_num_traj=max_num_traj)
 
         with open(cache_filename, 'wb') as file:
@@ -449,14 +450,17 @@ def main_f16_koopman():
 def main_dubins():
     '''main entry point using dubins data'''
 
+    #file_path="../output/expr_20240522_143535/PPO_DubinsRejoin_15bc3_00000_0_2024-05-22_14-35-38/eval/ckpt_200/eval.log"
+    eval_file_path="../output/expr_20240918_143039/PPO_DubinsRejoin_1c75e_00000_0_2024-09-18_14-30-42/eval/ckpt_200/eval.log"
+
     # Set NumPy to raise an error on overflow
     np.seterr(over='raise', invalid='raise')
     np.set_printoptions(suppress=True) # no scientific notation
 
     num_traj = np.inf #100
 
-    print("loading data...")
-    states_np_list, actions_np_list = load_data(max_num_traj=num_traj)
+    print("loading data from {eval_file_path}...")
+    states_np_list, actions_np_list = load_data(eval_file_path, max_num_traj=num_traj)
 
     split_data = koopman_util.split_test_validation_train(states_np_list, actions_np_list, num_test=3, num_validation=3)
     test_states, test_actions, validation_states, validation_actions, training_states, training_actions = split_data
@@ -552,6 +556,7 @@ def main2():
     print(f"\nPlotting best hyperparameters: {best_hyperparams}")
 
     try_koopman_model(training_states, training_actions, test_states, test_actions, seed, best_hyperparams["gamma"], best_hyperparams["num_features"], plot=True)
+
 
 def main():
     #main_dubins()
