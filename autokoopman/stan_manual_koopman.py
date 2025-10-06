@@ -1,4 +1,3 @@
-
 import matplotlib
 from matplotlib import pyplot as plt
 import numpy as np
@@ -13,7 +12,8 @@ import koopman_util
 
 from cachier import cachier
 
-def make_states(lead_x_list, lead_y_list, wingman_x_list, wingman_y_list, lead_speed_list, wingman_speed_list, lead_heading_list, wingman_heading_list):
+def make_states(lead_x_list, lead_y_list, wingman_x_list, wingman_y_list, lead_speed_list, wingman_speed_list, lead_heading_list, wingman_heading_list,
+    wingman=True):
     '''make states from raw data'''
 
     lead_vx_normalized = np.cos(lead_heading_list)
@@ -29,11 +29,14 @@ def make_states(lead_x_list, lead_y_list, wingman_x_list, wingman_y_list, lead_s
     lead_vy = lead_speed_list * np.sin(lead_heading_list)
 
     ############ LEAD ###############
-    #states = list(zip(lead_x_list, lead_y_list, lead_heading_list, lead_speed_list))
+    if wingman:
+        states = list(zip(lead_x_list, lead_y_list, lead_heading_list, lead_speed_list))
     #states = list(zip(lead_x_list, lead_y_list, lead_vx_normalized, lead_vy_normalized, lead_speed_list)) # magnorm of angle
 
     ############ WINGMAN ###########
-    states = list(zip(wingman_x_list, wingman_y_list, wingman_heading_list, wingman_speed_list))
+    if not wingman:
+        states = list(zip(wingman_x_list, wingman_y_list, wingman_heading_list, wingman_speed_list))
+    
     #states = list(zip(wingman_x_list, wingman_y_list, wingman_heading_list, wingman_speed_list, wingman_vx, wingman_vy, )) # magnorm of angle
 
 
@@ -97,9 +100,9 @@ def extract_states_actions(data, max_num_traj=np.inf):
             actions = np.array([entry["info"]["wingman"]["controller"]["control"] for entry in batch[1:] + [batch[-1]]])
             batch = []
 
-            states = make_states(lead_x, lead_y, wingman_x, wingman_y, lead_speed, wingman_speed, lead_heading, wingman_heading)
-
-            states_np_list.append(np.array(states).T)
+            for wingman in [True, False]: # both wingman and lead
+                states = make_states(lead_x, lead_y, wingman_x, wingman_y, lead_speed, wingman_speed, lead_heading, wingman_heading)
+                states_np_list.append(np.array(states).T)
 
             
             actions_np_list.append(np.array(actions).T)
