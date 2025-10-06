@@ -97,15 +97,18 @@ def extract_states_actions(data, max_num_traj=np.inf):
             #actions = [entry['actions'] for entry in batch] ### figure out what is actions??
 
             # note that control is the value at the PREVIOUS step (so ignore the first action)
-            actions = np.array([entry["info"]["wingman"]["controller"]["control"] for entry in batch[1:] + [batch[-1]]])
+            wing_actions = np.array([entry["info"]["wingman"]["controller"]["control"] for entry in batch[1:] + [batch[-1]]])
+            lead_actions = np.array([entry["info"]["lead"]["controller"]["control"] for entry in batch[1:] + [batch[-1]]])
             batch = []
 
             for wingman in [True, False]: # both wingman and lead
                 states = make_states(lead_x, lead_y, wingman_x, wingman_y, lead_speed, wingman_speed, lead_heading, wingman_heading)
                 states_np_list.append(np.array(states).T)
 
-            
-            actions_np_list.append(np.array(actions).T)
+                if wingman:
+                    actions_np_list.append(np.array(wing_actions).T)
+                else:
+                    actions_np_list.append(np.array(lead_actions).T)
 
             if len(states_np_list) >= max_num_traj:
                 break
